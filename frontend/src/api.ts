@@ -30,6 +30,11 @@ export interface Note {
   reminder_date: string | null
 }
 
+export interface TaggingCommentLine {
+  label: string
+  note: string
+}
+
 export interface Company {
   id: string
   external_id: string
@@ -49,6 +54,8 @@ export interface Company {
   tags: Tag[]
   activity: ActivityEntry[]
   notes: Note[]
+  tagging_comment: TaggingCommentLine[]
+  tagging_action: string | null
 }
 
 export interface Metrics {
@@ -170,6 +177,8 @@ const store: Company[] = [
     notes: [
       makeNote('Alexandria Lafci', 'Strong team, second-time founders. Worth a follow-up call.', '2025-06-11'),
     ],
+    tagging_comment: [],
+    tagging_action: null,
   },
   {
     id: '2',
@@ -198,6 +207,11 @@ const store: Company[] = [
       makeActivity('tagged', 'AI auto-tagged via LLM', '2025-06-10'),
     ],
     notes: [],
+    tagging_comment: [
+      { label: 'Product Type', note: 'unclear between hardware platform and IoT device' },
+      { label: 'Region', note: 'location field empty' },
+    ],
+    tagging_action: 'Check product page to confirm delivery model and verify US region from LinkedIn',
   },
   {
     id: '3',
@@ -227,6 +241,10 @@ const store: Company[] = [
     notes: [
       makeNote('Tomas Garcia', 'Met founder at ConTech Summit — following up next week.', '2025-06-09', '2025-06-16'),
     ],
+    tagging_comment: [
+      { label: 'Industry', note: 'unclear between Commercial and Residential based on transaction description' },
+    ],
+    tagging_action: 'Confirm target industry segment directly with the founder — property transactions could serve either commercial or residential clients.',
   },
   {
     id: '4',
@@ -256,6 +274,8 @@ const store: Company[] = [
       makeActivity('reviewed', 'Tags approved — marked human-reviewed', '2025-06-07'),
     ],
     notes: [],
+    tagging_comment: [],
+    tagging_action: null,
   },
   {
     id: '5',
@@ -284,6 +304,11 @@ const store: Company[] = [
     notes: [
       makeNote('System', 'Flagged as a possible test/demo entry — confirm before including in reports.', '2025-06-05'),
     ],
+    tagging_comment: [
+      { label: 'Industry', note: 'low confidence — thesis fit unclear, may be out of scope' },
+      { label: 'Stage', note: 'demolition scope conflicts with active portfolio thesis' },
+    ],
+    tagging_action: 'Confirm whether this is a real inbound lead or a test entry before spending review time on it.',
   },
   {
     id: '6',
@@ -306,6 +331,8 @@ const store: Company[] = [
       makeActivity('created', 'Added to database via Inbound Pipeline', '2025-07-01'),
     ],
     notes: [],
+    tagging_comment: [],
+    tagging_action: null,
   },
 ]
 
@@ -539,7 +566,7 @@ export async function createCompany(data: {
     origin_source: data.origin_source ?? '',
     origin_category: data.origin_category || null,
     allie_knockout: null, andra_knockout: null,
-    tags: [], activity: [], notes: [],
+    tags: [], activity: [], notes: [], tagging_comment: [], tagging_action: null,
   }
   logActivity(company, 'created', `Added to database via ${data.origin_category || 'Manual Entry'}`)
   store.push(company)

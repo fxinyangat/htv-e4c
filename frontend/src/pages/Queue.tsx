@@ -54,6 +54,37 @@ function primaryPills(item: QueueListItem) {
   )
 }
 
+const HIGH_SEVERITY_LABELS = ['Industry', 'Stage', 'Construction Stage']
+
+function taggingCommentBlock(company: Company) {
+  if (company.tagging_comment.length === 0 && !company.tagging_action) return null
+
+  const highSeverity = company.tagging_comment.some(line => HIGH_SEVERITY_LABELS.includes(line.label))
+  const bg = highSeverity ? '#FFF5F5' : '#FFFBEB'
+  const border = highSeverity ? '#FECACA' : '#F5D87A'
+
+  return (
+    <div className="mt-3 rounded-lg px-3.5 py-3" style={{ backgroundColor: bg, border: `1px solid ${border}` }}>
+      <div className="flex items-center gap-1.5 mb-2">
+        <span className="text-xs leading-none">🤖</span>
+        <span className="text-[10px] font-bold uppercase tracking-widest" style={{ color: '#92400E' }}>Agent Note</span>
+      </div>
+      <div style={{ lineHeight: 1.6 }}>
+        {company.tagging_comment.map((line, i) => (
+          <p key={i} className="text-[13px]" style={{ color: '#92400E' }}>
+            • {line.label} — {line.note}
+          </p>
+        ))}
+        {company.tagging_action && (
+          <p className="text-[13px] font-semibold" style={{ color: '#92400E' }}>
+            → Action: {company.tagging_action}
+          </p>
+        )}
+      </div>
+    </div>
+  )
+}
+
 const SORT_OPTIONS = [
   { value: 'updated_desc', label: 'Recently Modified' },
   { value: 'name_asc', label: 'Name (A-Z)' },
@@ -218,7 +249,7 @@ function QueueRow({
         <div className="min-w-0 flex-1">
           <h3 className="font-display font-semibold text-ht-blue text-base">{item.name}</h3>
           <p className="text-sm text-ht-blue/60 mt-1 line-clamp-1">{item.description}</p>
-          {primaryPills(item)}
+          {expanded ? (company && taggingCommentBlock(company)) : primaryPills(item)}
         </div>
         <div className="flex items-center gap-3 shrink-0">
           <div className="flex flex-col items-end gap-1.5">
