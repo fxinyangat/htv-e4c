@@ -1,6 +1,6 @@
 import { useState } from 'react'
 import { X, Link2 } from 'lucide-react'
-import { Company, KnockoutStatus, TAXONOMY, AXIS_LABELS, REGIONS, ORIGIN_CATEGORIES, updateCompany } from '../api'
+import { Company, KnockoutStatus, TAXONOMY, AXIS_LABELS, REGIONS, ORIGIN_CATEGORIES, updateCompany, isRealCompanyId } from '../api'
 import { useToast } from '../context/ToastContext'
 import { isValidDomain, isValidUrl } from '../utils/validation'
 
@@ -96,6 +96,10 @@ export default function EditCompanyModal({ company, onClose, onSaved }: Props) {
     e.preventDefault()
     setTouched(true)
     if (nameError || domainError || linkedinError) return
+    if (isRealCompanyId(company.id)) {
+      showToast('info', 'Not connected yet', 'Editing Notion-backed companies isn\'t wired up yet — changes here would only apply to demo data.')
+      return
+    }
     setSaving(true)
     await updateCompany(company.id, {
       name, description, domain,

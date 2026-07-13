@@ -12,7 +12,7 @@ export interface Tag {
 }
 
 export type Priority = 'high' | 'review' | 'low'
-export type KnockoutStatus = 'Pass' | 'Fail' | null
+export type KnockoutStatus = '01_Pass' | '02_Discuss' | '03_Revisit - Need More Info' | '04_Deck' | '05_Fail' | null
 export type ActivityType = 'created' | 'tagged' | 'reviewed' | 'edited'
 
 export interface ActivityEntry {
@@ -107,11 +107,12 @@ export interface QueueListItem {
   has_pending: boolean
 }
 
+// Sourced live from the Hometeam Ventures Notion "Companies" database schema.
 export const TAXONOMY: Record<string, string[]> = {
-  industry: ['Commercial', 'Heavy Infrastructure', 'Industrial', 'Residential', 'Urban Planning'],
-  construction_stage: ['Design & Planning', 'Facility Management', 'On-site Construction', 'Post-construction', 'Pre-construction', 'Sustainability/Demolition'],
-  product_type: ['Building Materials', 'Hardware Device', 'Marketplace', 'Mobile App', 'Professional Services', 'Software Platform'],
-  technology_type: ['3D Printing', 'Advanced Materials', 'Artificial Intelligence', 'Augmented Reality', 'Cloud Computing/SaaS', 'Digital Twin', 'Internet of Things (IoT)', 'Robotics & Automation'],
+  industry: ['ConTech', 'PropTech', 'Out Of Scope', 'NA'],
+  construction_stage: ['Entire Value Chain', 'Post-Construction', 'Construction Execution', 'Conception', 'Pre-Construction', 'Design&Engineering', 'Circularity', 'Out Of Scope', 'Other', 'NA'],
+  product_type: ['Sustainability - Energy', 'AI - ML - IoT', 'Digital Collaboration', 'Risk Management', 'Labor Solution', 'GovTech', 'Inventory - Supply Chain Optimization', 'FinTech Or Financial Services', 'InsurTech', 'Analytics', 'Programming - Financing - Permitting Solutions', 'Industrialized Construction', 'Design Tech', 'Procurement', 'Operation - Maintenance - Renovation'],
+  technology_type: ['Material Science', 'SaaS', 'Hardware'],
 }
 
 export const AXIS_LABELS: Record<string, string> = {
@@ -121,8 +122,9 @@ export const AXIS_LABELS: Record<string, string> = {
   technology_type: 'Technology Type',
 }
 
-export const REGIONS = ['West US', 'East US', 'South US', 'Midwest US', 'Mountain US', 'Not specified']
-export const ORIGIN_CATEGORIES = ['Inbound', 'Outbound', 'Referral', 'Conference', 'Other']
+export const REGIONS = ['West US', 'Southwest US', 'Southeast US', 'Northeast US', 'Midwest US', 'International', 'International - Europe', 'Noncontiguous US', 'Unknown']
+export const ORIGIN_CATEGORIES = ['Automated Dealflow Search', 'Fund Fellows - Independent Research', 'Fund Fellows - Newsletter', 'Fund Fellows - Industry Events', 'Accelerators & Incubators', 'Hometeam Network', 'Harmonic_Automated Dealflow Search', 'Cold Inbound Via HTV Website', 'VC Co-investor', 'Cold Outreach', 'LP', 'Tracking Founders', 'Speaking Engagements', 'Unknown - DO NOT USE']
+export const KNOCKOUT_STATES = ['01_Pass', '02_Discuss', '03_Revisit - Need More Info', '04_Deck', '05_Fail']
 
 const AXES = ['construction_stage', 'technology_type', 'product_type', 'industry']
 
@@ -227,7 +229,7 @@ const store: Company[] = [
     linkedin_url: null,
     origin_source: 'ConTech Summit 2025',
     origin_category: 'Conference',
-    allie_knockout: 'Pass',
+    allie_knockout: '01_Pass',
     andra_knockout: null,
     tags: [
       makeTag('industry', 'Commercial', 'llm', 0.65, null, 'Serves property transactions broadly, mostly commercial deals.'),
@@ -260,8 +262,8 @@ const store: Company[] = [
     linkedin_url: 'https://linkedin.com/company/buildsafeai',
     origin_source: 'LinkedIn',
     origin_category: 'Inbound',
-    allie_knockout: 'Pass',
-    andra_knockout: 'Pass',
+    allie_knockout: '01_Pass',
+    andra_knockout: '01_Pass',
     tags: [
       makeTag('industry', 'Industrial', 'human', 1, true),
       makeTag('construction_stage', 'On-site Construction', 'human', 1, true),
@@ -291,7 +293,7 @@ const store: Company[] = [
     linkedin_url: null,
     origin_source: 'Cold email',
     origin_category: 'Outbound',
-    allie_knockout: 'Fail',
+    allie_knockout: '05_Fail',
     andra_knockout: null,
     tags: [
       makeTag('industry', 'Heavy Infrastructure', 'llm', 0.4, null, 'Low confidence — thesis fit is weak.'),
@@ -470,7 +472,32 @@ export async function fetchQueue(params: {
   return delay({ total: items.length, items: items.slice(start, start + pageSize) })
 }
 
+// Real Notion company IDs are UUIDs (contain dashes); mock/demo IDs are plain digits.
+export function isRealCompanyId(id: string): boolean {
+  return id.includes('-')
+}
+
+let realCompaniesCache: Company[] | null = null
+
+async function fetchRealCompanies(): Promise<Company[]> {
+  if (realCompaniesCache) return realCompaniesCache
+  const res = await fetch('/api/companies')
+  if (!res.ok) throw new Error('Failed to fetch companies from Notion')
+  const data = await res.json()
+  realCompaniesCache = data.companies as Company[]
+  return realCompaniesCache
+}
+
+export function invalidateCompaniesCache() {
+  realCompaniesCache = null
+}
+
 export async function fetchCompany(id: string): Promise<Company> {
+  if (isRealCompanyId(id)) {
+    const res = await fetch(`/api/companies/${id}`)
+    if (!res.ok) throw new Error('Failed to fetch company from Notion')
+    return res.json()
+  }
   const company = store.find(c => c.id === id)
   if (!company) throw new Error('Company not found')
   return delay({ ...company, tags: [...company.tags], activity: [...company.activity], notes: [...company.notes] })
@@ -506,7 +533,8 @@ export async function fetchCompanies(params: {
   sort?: string
   filters?: Record<string, string[]>
 }): Promise<{ total: number; items: CompanyListItem[] }> {
-  let items = store.map(toListItem)
+  const realCompanies = await fetchRealCompanies()
+  let items = realCompanies.map(toListItem)
 
   if (params.search) {
     const q = params.search.toLowerCase()

@@ -1,6 +1,6 @@
 import { useEffect, useState } from 'react'
 import {
-  Search, X, PartyPopper, Loader2, ChevronDown, ShieldAlert, ShieldX, Tag as TagIcon, CheckCircle2,
+  Search, X, PartyPopper, Loader2, ChevronDown, ShieldAlert, ShieldX, Tag as TagIcon, CheckCircle2, Bot,
 } from 'lucide-react'
 import {
   fetchQueue, fetchCompany, updateCompany, QueueListItem, Company, QueueBadge, TAXONOMY, AXIS_LABELS, REGIONS,
@@ -63,21 +63,24 @@ function taggingCommentBlock(company: Company) {
   const bg = highSeverity ? '#FFF5F5' : '#FFFBEB'
   const border = highSeverity ? '#FECACA' : '#F5D87A'
 
+  const text = '#92400E'
+
   return (
     <div className="mt-3 rounded-lg px-3.5 py-3" style={{ backgroundColor: bg, border: `1px solid ${border}` }}>
-      <div className="flex items-center gap-1.5 mb-2">
-        <span className="text-xs leading-none">🤖</span>
-        <span className="text-[10px] font-bold uppercase tracking-widest" style={{ color: '#92400E' }}>Agent Note</span>
+      <div className="flex items-center gap-1.5 mb-1.5">
+        <Bot className="w-3 h-3" style={{ color: text }} />
+        <span className="text-[10px] font-bold uppercase tracking-widest" style={{ color: text }}>AI Agent Notes</span>
       </div>
+
       <div style={{ lineHeight: 1.6 }}>
         {company.tagging_comment.map((line, i) => (
-          <p key={i} className="text-[13px]" style={{ color: '#92400E' }}>
+          <p key={i} className="text-xs" style={{ color: text }}>
             • {line.label} — {line.note}
           </p>
         ))}
         {company.tagging_action && (
-          <p className="text-[13px] font-semibold" style={{ color: '#92400E' }}>
-            → Action: {company.tagging_action}
+          <p className="text-xs" style={{ color: text }}>
+            → {company.tagging_action}
           </p>
         )}
       </div>
@@ -254,11 +257,17 @@ function QueueRow({
         <div className="flex items-center gap-3 shrink-0">
           <div className="flex flex-col items-end gap-1.5">
             {badgePill(item.badge)}
-            <span className={`text-xs flex items-center gap-1.5 ${item.stale ? 'text-red-500' : 'text-ht-blue/40'}`}>
-              {item.stale && <span className="w-1.5 h-1.5 rounded-full bg-red-500" />}
-              {item.issue || formatDate(item.updated_at)}
-            </span>
-            {item.issue && <span className="text-xs text-ht-blue/40">{formatDate(item.updated_at)}</span>}
+            {expanded ? (
+              <span className="text-xs text-ht-blue/40">{formatDate(item.updated_at)}</span>
+            ) : (
+              <>
+                <span className={`text-xs flex items-center gap-1.5 ${item.stale ? 'text-red-500' : 'text-ht-blue/40'}`}>
+                  {item.stale && <span className="w-1.5 h-1.5 rounded-full bg-red-500" />}
+                  {item.issue || formatDate(item.updated_at)}
+                </span>
+                {item.issue && <span className="text-xs text-ht-blue/40">{formatDate(item.updated_at)}</span>}
+              </>
+            )}
           </div>
           <ChevronDown className={`w-4 h-4 text-ht-blue/40 transition-transform ${expanded ? 'rotate-180' : ''}`} />
         </div>

@@ -1,6 +1,6 @@
 import { useState, ReactNode } from 'react'
 import { X, MoreVertical, Pencil, Trash2, ExternalLink, Bot, UserRound, CheckCircle2, AlertTriangle, PlusCircle, Sparkles, Send, Bell, CalendarClock } from 'lucide-react'
-import { Company, Tag, ActivityType, deleteCompany, addNote, deleteNote } from '../api'
+import { Company, Tag, ActivityType, deleteCompany, addNote, deleteNote, isRealCompanyId } from '../api'
 import EditCompanyModal from './EditCompanyModal'
 import ConfirmDeleteModal from './ConfirmDeleteModal'
 import { useToast } from '../context/ToastContext'
@@ -107,6 +107,10 @@ export default function CompanyDetailPanel({ company, onClose, onDeleted, onUpda
   async function handleAddNote(e: React.FormEvent) {
     e.preventDefault()
     if (!noteText.trim()) return
+    if (isRealCompanyId(company.id)) {
+      showToast('info', 'Not connected yet', 'Notes on Notion-backed companies aren\'t wired up yet.')
+      return
+    }
     setAddingNote(true)
     await addNote(company.id, noteText.trim(), reminderDate || null)
     setNoteText('')
@@ -116,12 +120,21 @@ export default function CompanyDetailPanel({ company, onClose, onDeleted, onUpda
   }
 
   async function handleDeleteNote(noteId: string) {
+    if (isRealCompanyId(company.id)) {
+      showToast('info', 'Not connected yet', 'Notes on Notion-backed companies aren\'t wired up yet.')
+      return
+    }
     await deleteNote(company.id, noteId)
     showToast('success', 'Note deleted', 'The note has been removed.')
     onUpdated()
   }
 
   async function handleConfirmDelete() {
+    if (isRealCompanyId(company.id)) {
+      setDeleting(false)
+      showToast('info', 'Not connected yet', 'Deleting Notion-backed companies isn\'t wired up yet.')
+      return
+    }
     setDeleteLoading(true)
     await deleteCompany(company.id)
     setDeleteLoading(false)

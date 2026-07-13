@@ -1,7 +1,7 @@
 import { useEffect, useRef, useState } from 'react'
 import { useSearchParams } from 'react-router-dom'
 import { Search, X, Plus, Building2, SearchX, Loader2, ShieldCheck, ShieldAlert, ShieldX, Pencil, Trash2 } from 'lucide-react'
-import { fetchCompanies, fetchCompany, createCompany, deleteCompany, TAXONOMY, AXIS_LABELS, ORIGIN_CATEGORIES, CompanyListItem, Company, Priority } from '../api'
+import { fetchCompanies, fetchCompany, createCompany, deleteCompany, isRealCompanyId, TAXONOMY, AXIS_LABELS, ORIGIN_CATEGORIES, CompanyListItem, Company, Priority } from '../api'
 import { useChatContext } from '../context/ChatContext'
 import { useToast } from '../context/ToastContext'
 
@@ -182,6 +182,11 @@ export default function Companies() {
 
   async function confirmDelete() {
     if (!deleteTarget) return
+    if (isRealCompanyId(deleteTarget.id)) {
+      setDeleteTarget(null)
+      showToast('info', 'Not connected yet', 'Deleting Notion-backed companies isn\'t wired up yet.')
+      return
+    }
     setDeleteLoading(true)
     await deleteCompany(deleteTarget.id)
     setDeleteLoading(false)
@@ -422,7 +427,7 @@ function AddCompanyModal({ onClose, onAdded }: { onClose: () => void; onAdded: (
         origin_category: originCategory || undefined,
         external_id: extId.trim() || undefined,
       })
-      showToast('success', 'Company added', `${name.trim()} has been added and is being auto-tagged.`)
+      showToast('info', 'Added as demo data', `${name.trim()} was added to local demo data only — creating real Notion companies isn't wired up yet, so it won't appear in this list.`)
       onAdded(result.id)
     } catch (err: unknown) {
       const message = err instanceof Error ? err.message : 'Failed to add company'
