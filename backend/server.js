@@ -2,7 +2,7 @@ import express from 'express'
 import cors from 'cors'
 import {
   notionFetch, fetchAllPages, NOTION_COMPANIES_DB_ID,
-  readTitle, readText, readMultiSelect, readSelect, readUrl,
+  readTitle, readText, readMultiSelect, readSelect, readUrl, readOptions,
 } from './notion.js'
 
 const app = express()
@@ -12,6 +12,25 @@ app.use(express.json())
 function stripDomain(url) {
   if (!url) return ''
   return url.replace(/^https?:\/\//, '').replace(/\/$/, '')
+}
+
+// Agent writes JSON like { "Industry": "why NA/Out Of Scope", "Stage": "...", "Product": "...",
+// "Technology": "...", "Region": "...", "Action": "single most important fix" } into the
+// "Tagging Comment" rich_text property. Only keys with filler values are present.
+function parseTaggingComment(raw) {
+  const text = (raw || '').trim()
+  if (!text) return { tagging_comment: [], tagging_action: null }
+  try {
+    const obj = JSON.parse(text)
+    const tagging_action = typeof obj.Action === 'string' ? obj.Action : null
+    const tagging_comment = Object.entries(obj)
+      .filter(([key]) => key !== 'Action')
+      .map(([label, note]) => ({ label, note: String(note) }))
+    return { tagging_comment, tagging_action }
+  } catch {
+    // Agent wrote non-JSON text — surface it as a single note rather than dropping it.
+    return { tagging_comment: [{ label: 'Note', note: text }], tagging_action: null }
+  }
 }
 
 let nextTagId = 1
@@ -27,8 +46,9 @@ function mapCompany(page) {
   const originCategory = readMultiSelect(p['Origin Category (HVC)'])
   const diversity = readMultiSelect(p['Diversity Status'])
 
-  const taggedBy = readSelect(p['Tagged By'])
+  const taggedBy = readSelect(p['Tagged By']) || 'NA'
   const tagSource = taggedBy === 'Human' ? 'human' : taggedBy === 'AI Agent' ? 'llm' : 'human'
+  const { tagging_comment, tagging_action } = parseTaggingComment(readText(p['Tagging Comment']))
 
   const tags = []
   const axes = [
@@ -56,25 +76,59 @@ function mapCompany(page) {
     updated_at: (page.last_edited_time || '').slice(0, 10),
     domain: stripDomain(readUrl(p['Domain'])),
     location: readText(p['Location']),
-    region: region[0] || 'Unknown',
+    region,
     diversity_status: diversity[0] || null,
     linkedin_url: readUrl(p['LinkedIn URL']),
     origin_source: readUrl(p['Origin Source']) || '',
     origin_category: originCategory[0] || null,
     allie_knockout: readSelect(p['Allie Knockout Pass/Fail']),
     andra_knockout: readSelect(p['Andra Knockout Pass/Fail']),
+    tagged_by: taggedBy,
     tags,
     activity: [],
     notes: [],
-    tagging_comment: [],
-    tagging_action: null,
+    tagging_comment,
+    tagging_action,
   }
+}
+
+// Full company list, cached in-memory so an uncapped fetch (now spanning every row,
+// not just the first 1000 — currently ~10k) doesn't hit Notion on every page load.
+// A full fetch takes ~60s at this row count, so the cache is warmed on startup and
+// refreshed proactively in the background — requests should never hit a cold cache.
+const COMPANIES_TTL_MS = 60 * 60 * 1000 // 1 hour — a manual refresh button covers the "I need this now" case
+// Floor between forced (?refresh=1) fetches, shared across every user/tab — stops someone
+// mashing the Refresh button (or multiple people refreshing at once) from stacking up
+// several ~60s Notion pulls at the same time.
+const MIN_REFRESH_INTERVAL_MS = 60 * 1000
+let companiesCache = null
+let companiesCachedAt = 0
+let companiesLoadPromise = null // in-flight fetch, shared so concurrent requests don't double-fetch
+
+function loadCompanies() {
+  if (companiesLoadPromise) return companiesLoadPromise
+  companiesLoadPromise = (async () => {
+    const pages = await fetchAllPages(NOTION_COMPANIES_DB_ID)
+    companiesCachedAt = Date.now()
+    const payload = { companies: pages.map(mapCompany), cached_at: companiesCachedAt }
+    companiesCache = payload
+    return payload
+  })()
+  companiesLoadPromise.finally(() => { companiesLoadPromise = null })
+  return companiesLoadPromise
 }
 
 app.get('/api/companies', async (req, res) => {
   try {
-    const pages = await fetchAllPages(NOTION_COMPANIES_DB_ID)
-    res.json({ companies: pages.map(mapCompany) })
+    const wantsRefresh = req.query.refresh === '1'
+    const cacheAge = companiesCache ? Date.now() - companiesCachedAt : Infinity
+    // A forced refresh only actually re-fetches if the cache is older than the cooldown —
+    // otherwise it's treated like a normal request and just serves the (recent) cache.
+    const shouldFetch = !companiesCache || cacheAge >= COMPANIES_TTL_MS || (wantsRefresh && cacheAge >= MIN_REFRESH_INTERVAL_MS)
+    if (!shouldFetch) {
+      return res.json(companiesCache)
+    }
+    res.json(await loadCompanies())
   } catch (err) {
     console.error(err)
     res.status(err.status || 500).json({ error: err.message })
@@ -91,5 +145,48 @@ app.get('/api/companies/:id', async (req, res) => {
   }
 })
 
+// Live dropdown options straight off the Notion schema, cached in-memory so we don't
+// hit Notion on every request — schema changes are rare, unlike row data.
+const TAXONOMY_TTL_MS = 60 * 60 * 1000 // 1 hour
+let taxonomyCache = null
+let taxonomyCachedAt = 0
+
+app.get('/api/taxonomy', async (req, res) => {
+  try {
+    const fresh = req.query.refresh === '1'
+    if (!fresh && taxonomyCache && Date.now() - taxonomyCachedAt < TAXONOMY_TTL_MS) {
+      return res.json(taxonomyCache)
+    }
+
+    const db = await notionFetch(`/databases/${NOTION_COMPANIES_DB_ID}`)
+    const p = db.properties
+
+    const taxonomy = {
+      industry: readOptions(p['Industry (HVC)']),
+      construction_stage: readOptions(p['Construction Stage (HVC)']),
+      product_type: readOptions(p['Product Type (HVC)']),
+      technology_type: readOptions(p['Technology Type (HVC)']),
+      region: readOptions(p['Region (HTV)']),
+      origin_category: readOptions(p['Origin Category (HVC)']),
+      allie_knockout_states: readOptions(p['Allie Knockout Pass/Fail']),
+      andra_knockout_states: readOptions(p['Andra Knockout Pass/Fail']),
+    }
+
+    taxonomyCache = taxonomy
+    taxonomyCachedAt = Date.now()
+    res.json(taxonomy)
+  } catch (err) {
+    console.error(err)
+    res.status(err.status || 500).json({ error: err.message })
+  }
+})
+
 const PORT = process.env.PORT || 8000
 app.listen(PORT, () => console.log(`HTV backend listening on http://localhost:${PORT}`))
+
+// Warm the companies cache immediately, then keep refreshing it before the TTL expires
+// so the ~60s Notion fetch never happens on a user-facing request.
+loadCompanies().catch(err => console.error('Failed to warm companies cache:', err.message))
+setInterval(() => {
+  loadCompanies().catch(err => console.error('Failed to refresh companies cache:', err.message))
+}, COMPANIES_TTL_MS)

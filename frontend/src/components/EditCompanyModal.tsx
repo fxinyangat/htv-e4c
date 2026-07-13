@@ -1,7 +1,8 @@
 import { useState } from 'react'
 import { X, Link2 } from 'lucide-react'
-import { Company, KnockoutStatus, TAXONOMY, AXIS_LABELS, REGIONS, ORIGIN_CATEGORIES, updateCompany, isRealCompanyId } from '../api'
+import { Company, KnockoutStatus, AXIS_LABELS, updateCompany, isRealCompanyId } from '../api'
 import { useToast } from '../context/ToastContext'
+import { useTaxonomy } from '../context/TaxonomyContext'
 import { isValidDomain, isValidUrl } from '../utils/validation'
 
 function Field({ label, children }: { label: string; children: React.ReactNode }) {
@@ -68,6 +69,7 @@ interface Props {
 
 export default function EditCompanyModal({ company, onClose, onSaved }: Props) {
   const { showToast } = useToast()
+  const { taxonomy, originCategories, allieKnockoutStates, andraKnockoutStates } = useTaxonomy()
   const activeTags = company.tags.filter(t => t.is_accepted !== false)
   const valuesFor = (axis: string) => activeTags.filter(t => t.axis === axis).map(t => t.value)
 
@@ -84,7 +86,7 @@ export default function EditCompanyModal({ company, onClose, onSaved }: Props) {
   const [stages, setStages] = useState<string[]>(valuesFor('construction_stage'))
   const [productTypes, setProductTypes] = useState<string[]>(valuesFor('product_type'))
   const [techTypes, setTechTypes] = useState<string[]>(valuesFor('technology_type'))
-  const [region, setRegion] = useState(company.region)
+  const [region, setRegion] = useState<string[]>(company.region)
   const [saving, setSaving] = useState(false)
   const [touched, setTouched] = useState(false)
 
@@ -169,48 +171,44 @@ export default function EditCompanyModal({ company, onClose, onSaved }: Props) {
           <Field label="Origin Category">
             <select value={originCategory} onChange={e => setOriginCategory(e.target.value)} className={selectCls} style={selectArrowStyle}>
               <option value="">Select category</option>
-              {ORIGIN_CATEGORIES.map(o => <option key={o} value={o}>{o}</option>)}
+              {originCategories.map(o => <option key={o} value={o}>{o}</option>)}
             </select>
           </Field>
 
           <Field label="Allie Knockout Pass/Fail">
             <select value={allie ?? ''} onChange={e => setAllie((e.target.value || null) as KnockoutStatus)} className={selectCls} style={selectArrowStyle}>
               <option value="">Select…</option>
-              <option value="Pass">Pass</option>
-              <option value="Fail">Fail</option>
+              {allieKnockoutStates.map(o => <option key={o} value={o}>{o}</option>)}
             </select>
           </Field>
 
           <Field label="Andra Knockout Pass/Fail">
             <select value={andra ?? ''} onChange={e => setAndra((e.target.value || null) as KnockoutStatus)} className={selectCls} style={selectArrowStyle}>
               <option value="">Select…</option>
-              <option value="Pass">Pass</option>
-              <option value="Fail">Fail</option>
+              {andraKnockoutStates.map(o => <option key={o} value={o}>{o}</option>)}
             </select>
           </Field>
 
           <h4 className="text-[11px] font-bold text-ht-blue/40 uppercase tracking-widest pt-2">Classification Tags</h4>
 
           <Field label={`${AXIS_LABELS.industry} (HVC)`}>
-            <ChipMultiSelect options={TAXONOMY.industry} values={industries} onChange={setIndustries} />
+            <ChipMultiSelect options={taxonomy.industry} values={industries} onChange={setIndustries} />
           </Field>
 
           <Field label={`${AXIS_LABELS.construction_stage} (HVC)`}>
-            <ChipMultiSelect options={TAXONOMY.construction_stage} values={stages} onChange={setStages} />
+            <ChipMultiSelect options={taxonomy.construction_stage} values={stages} onChange={setStages} />
           </Field>
 
           <Field label={`${AXIS_LABELS.product_type} (HVC)`}>
-            <ChipMultiSelect options={TAXONOMY.product_type} values={productTypes} onChange={setProductTypes} />
+            <ChipMultiSelect options={taxonomy.product_type} values={productTypes} onChange={setProductTypes} />
           </Field>
 
           <Field label={`${AXIS_LABELS.technology_type} (HVC)`}>
-            <ChipMultiSelect options={TAXONOMY.technology_type} values={techTypes} onChange={setTechTypes} />
+            <ChipMultiSelect options={taxonomy.technology_type} values={techTypes} onChange={setTechTypes} />
           </Field>
 
-          <Field label="Region (HVC)">
-            <select value={region} onChange={e => setRegion(e.target.value)} className={selectCls} style={selectArrowStyle}>
-              {REGIONS.map(o => <option key={o} value={o}>{o}</option>)}
-            </select>
+          <Field label={`${AXIS_LABELS.region} (HTV)`}>
+            <ChipMultiSelect options={taxonomy.region} values={region} onChange={setRegion} />
           </Field>
 
           <p className="text-xs text-ht-blue/40 text-center pt-1">Classification changes will be saved as Human-reviewed and override AI tags.</p>

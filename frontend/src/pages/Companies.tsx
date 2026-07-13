@@ -1,9 +1,10 @@
 import { useEffect, useRef, useState } from 'react'
 import { useSearchParams } from 'react-router-dom'
-import { Search, X, Plus, Building2, SearchX, Loader2, ShieldCheck, ShieldAlert, ShieldX, Pencil, Trash2 } from 'lucide-react'
-import { fetchCompanies, fetchCompany, createCompany, deleteCompany, isRealCompanyId, TAXONOMY, AXIS_LABELS, ORIGIN_CATEGORIES, CompanyListItem, Company, Priority } from '../api'
+import { Search, X, Plus, Building2, SearchX, Loader2, ShieldCheck, ShieldAlert, ShieldX, Pencil, Trash2, RefreshCw } from 'lucide-react'
+import { fetchCompanies, fetchCompany, createCompany, deleteCompany, refreshCompanies, REFRESH_COOLDOWN_S, getCompaniesCachedAt, formatRelativeTime, isRealCompanyId, AXIS_LABELS, CompanyListItem, Company, Priority } from '../api'
 import { useChatContext } from '../context/ChatContext'
 import { useToast } from '../context/ToastContext'
+import { useTaxonomy } from '../context/TaxonomyContext'
 
 import CompanyDetailPanel from '../components/CompanyDetailPanel'
 import ConfirmDeleteModal from '../components/ConfirmDeleteModal'
@@ -68,6 +69,7 @@ const SORT_OPTIONS = [
 
 export default function Companies() {
   const { showToast } = useToast()
+  const { taxonomy } = useTaxonomy()
   const [items, setItems] = useState<CompanyListItem[]>([])
   const [total, setTotal] = useState(0)
   const [page, setPage] = useState(1)
@@ -83,7 +85,7 @@ export default function Companies() {
   const [showAdd, setShowAdd] = useState(false)
   const [taggingIds, setTaggingIds] = useState<Set<string>>(new Set())
   const [expandedCats, setExpandedCats] = useState<Record<string, boolean>>(
-    Object.keys(TAXONOMY).reduce((acc, key) => ({ ...acc, [key]: false }), {})
+    Object.keys(taxonomy).reduce((acc, key) => ({ ...acc, [key]: false }), {})
   )
 
   useEffect(() => {
@@ -123,6 +125,37 @@ export default function Companies() {
   }
 
   loadRef.current = load
+
+  const [refreshing, setRefreshing] = useState(false)
+  const [cooldown, setCooldown] = useState(0) // seconds left before Refresh is clickable again
+  const [, tick] = useState(0) // re-render periodically so the "X ago" label stays current
+
+  useEffect(() => {
+    if (cooldown <= 0) return
+    const t = setInterval(() => setCooldown(s => Math.max(0, s - 1)), 1000)
+    return () => clearInterval(t)
+  }, [cooldown])
+
+  useEffect(() => {
+    const t = setInterval(() => tick(n => n + 1), 15000)
+    return () => clearInterval(t)
+  }, [])
+
+  async function handleRefresh() {
+    if (refreshing || cooldown > 0) return
+    setRefreshing(true)
+    try {
+      await refreshCompanies()
+      await load(page)
+      showToast('success', 'Refreshed', 'Latest company data pulled from Notion.')
+    } catch (err) {
+      console.error('Failed to refresh companies from Notion:', err)
+      showToast('error', 'Refresh failed', 'Could not pull the latest data from Notion.')
+    } finally {
+      setRefreshing(false)
+      setCooldown(REFRESH_COOLDOWN_S)
+    }
+  }
 
   useEffect(() => { load(1); setPage(1) }, [search, status, filterKey, sort])
   useEffect(() => { load() }, [page])
@@ -241,16 +274,30 @@ export default function Companies() {
                   <option key={opt.value} value={opt.value}>{opt.label}</option>
                 ))}
               </select>
+              <div className="relative ml-auto">
+                <button
+                  onClick={handleRefresh}
+                  disabled={refreshing || cooldown > 0}
+                  className="px-4 py-2.5 bg-white text-ht-blue font-medium text-sm rounded-xl border border-ht-blue/10 hover:bg-ht-blue/5 hover:border-ht-blue/20 transition-all shadow-sm flex items-center gap-2 disabled:opacity-50"
+                >
+                  <RefreshCw className={`w-4 h-4 ${refreshing ? 'animate-spin' : ''}`} />
+                  {refreshing ? 'Refreshing…' : cooldown > 0 ? `Refresh (${cooldown}s)` : 'Refresh'}
+                </button>
+                {getCompaniesCachedAt() && (
+                  <span className="absolute top-full left-1/2 -translate-x-1/2 mt-1 text-[11px] text-ht-blue/40 whitespace-nowrap">
+                    {formatRelativeTime(getCompaniesCachedAt()!)}
+                  </span>
+                )}
+              </div>
               <button
                 onClick={() => setShowAdd(true)}
-                className="px-5 py-2.5 bg-ht-blue text-white text-sm font-semibold rounded-xl hover:shadow-lg hover:shadow-ht-blue/30 hover:-translate-y-0.5 transition-all ml-auto flex items-center gap-2"
+                className="px-5 py-2.5 bg-ht-blue text-white text-sm font-semibold rounded-xl hover:shadow-lg hover:shadow-ht-blue/30 hover:-translate-y-0.5 transition-all flex items-center gap-2"
               >
                 <Plus className="w-4 h-4 stroke-[3]" /> Add Company
               </button>
             </div>
 
             <div className="space-y-2">
-              <p className="text-sm text-gray-500">{total.toLocaleString()} companies</p>
               {activeFilterCount > 0 && (
                 <div className="flex flex-wrap items-center gap-1.5">
                   <span className="text-xs text-gray-400">Filtered by:</span>
@@ -319,7 +366,9 @@ export default function Companies() {
                   >
                     <div className="min-w-0 flex-1">
                       <h3 className="font-display font-semibold text-ht-blue text-base">{item.name}</h3>
-                      <p className="text-sm text-ht-blue/60 mt-1 line-clamp-1">{item.description}</p>
+                      <p className="text-sm text-ht-blue/60 mt-1 line-clamp-1">
+                        {item.description.trim() || <span className="italic text-ht-blue/30">No company description</span>}
+                      </p>
                       {primaryPills(item)}
                     </div>
                     <div className="flex items-center gap-3 shrink-0">
@@ -399,6 +448,7 @@ const modalSelectArrowStyle = {
 
 function AddCompanyModal({ onClose, onAdded }: { onClose: () => void; onAdded: (id: string) => void }) {
   const { showToast } = useToast()
+  const { originCategories } = useTaxonomy()
   const [name, setName] = useState('')
   const [domain, setDomain] = useState('')
   const [description, setDescription] = useState('')
@@ -501,7 +551,7 @@ function AddCompanyModal({ onClose, onAdded }: { onClose: () => void; onAdded: (
                 style={modalSelectArrowStyle}
               >
                 <option value="">Select category</option>
-                {ORIGIN_CATEGORIES.map(o => <option key={o} value={o}>{o}</option>)}
+                {originCategories.map(o => <option key={o} value={o}>{o}</option>)}
               </select>
             </div>
           </div>

@@ -44,13 +44,14 @@ export interface Company {
   updated_at: string
   domain: string
   location: string
-  region: string
+  region: string[]
   diversity_status: string | null
   linkedin_url: string | null
   origin_source: string
   origin_category: string | null
   allie_knockout: KnockoutStatus
   andra_knockout: KnockoutStatus
+  tagged_by: string
   tags: Tag[]
   activity: ActivityEntry[]
   notes: Note[]
@@ -75,7 +76,8 @@ export interface CompanyListItem {
   min_confidence: number | null
   has_pending: boolean | null
   tag_count: number
-  region: string
+  tagged_by: string
+  region: string | null
   construction_stage: string | null
   technology_type: string | null
   product_type: string | null
@@ -87,7 +89,7 @@ export interface CompanyListItem {
   industry_source: string | null
 }
 
-export type QueueBadge = 'review' | 'low' | 'untagged'
+export type ScoreBand = 'high' | 'needs_review' | 'insufficient'
 
 export interface QueueListItem {
   id: string
@@ -95,24 +97,49 @@ export interface QueueListItem {
   name: string
   description: string
   updated_at: string
-  badge: QueueBadge
-  issue: string
-  stale: boolean
+  tagged_by: string
+  score: number
+  band: ScoreBand
+  tagging_comment: TaggingCommentLine[]
+  tagging_action: string | null
   industry: string[]
   construction_stage: string[]
   product_type: string[]
   technology_type: string[]
-  region: string
+  region: string[]
   tag_count: number
-  has_pending: boolean
 }
 
-// Sourced live from the Hometeam Ventures Notion "Companies" database schema.
-export const TAXONOMY: Record<string, string[]> = {
+// Fallback snapshot used until the live schema loads (or if the backend is unreachable).
+// The source of truth is Notion itself — see fetchTaxonomy() / TaxonomyContext.
+export const DEFAULT_REGIONS = ['West US', 'Southwest US', 'Southeast US', 'Northeast US', 'Midwest US', 'International', 'International - Europe', 'Europe', 'Noncontiguous US', 'Unknown']
+export const DEFAULT_ORIGIN_CATEGORIES = ['Automated Dealflow Search', 'Fund Fellows - Independent Research', 'Fund Fellows - Newsletter', 'Fund Fellows - Industry Events', 'Accelerators & Incubators', 'Hometeam Network', 'Harmonic_Automated Dealflow Search', 'Cold Inbound Via HTV Website', 'VC Co-investor', 'Cold Outreach', 'LP', 'Tracking Founders', 'Speaking Engagements', 'Unknown - DO NOT USE']
+export const DEFAULT_ALLIE_KNOCKOUT_STATES = ['01_Pass', '02_Discuss', '03_Revisit - Need More Info', '04_Deck', '05_Fail']
+export const DEFAULT_ANDRA_KNOCKOUT_STATES = ['01_Pass', '02_Discuss', '03_Revisit - Need More Info', '04_Deck', '05_Fail']
+
+export const DEFAULT_TAXONOMY: Record<string, string[]> = {
   industry: ['ConTech', 'PropTech', 'Out Of Scope', 'NA'],
-  construction_stage: ['Entire Value Chain', 'Post-Construction', 'Construction Execution', 'Conception', 'Pre-Construction', 'Design&Engineering', 'Circularity', 'Out Of Scope', 'Other', 'NA'],
-  product_type: ['Sustainability - Energy', 'AI - ML - IoT', 'Digital Collaboration', 'Risk Management', 'Labor Solution', 'GovTech', 'Inventory - Supply Chain Optimization', 'FinTech Or Financial Services', 'InsurTech', 'Analytics', 'Programming - Financing - Permitting Solutions', 'Industrialized Construction', 'Design Tech', 'Procurement', 'Operation - Maintenance - Renovation'],
+  construction_stage: ['Entire Value Chain', 'Post-Construction', 'Construction Execution', 'Conception', 'Pre-Construction', 'Design&Engineering', 'Other', 'FILL IN', 'Out Of Scope', 'Circularity', 'NA'],
+  product_type: ['Sustainability - Energy', 'AI - ML - IoT', 'Digital Collaboration', 'Risk Management', 'Labor Solution', 'GovTech', 'Inventory - Supply Chain Optimization', 'FinTech Or Financial Services', 'InsurTech', 'Analytics', 'Programming - Financing - Permitting Solutions', 'Industrialized Construction', 'Design Tech', 'Procurement', 'Operation - Maintenance - Renovation', 'Other', 'Frontier Tech And Robotics', 'Renting Solutions', 'End of Life - Demolition & Waste - Recycling', 'Learning Platforms', 'ADD', 'Land Management Solutions', 'Homeownership', 'DeepTech', 'Legal Tasks', 'Geospatial Solution'],
   technology_type: ['Material Science', 'SaaS', 'Hardware'],
+  region: DEFAULT_REGIONS,
+}
+
+export interface TaxonomyData {
+  industry: string[]
+  construction_stage: string[]
+  product_type: string[]
+  technology_type: string[]
+  region: string[]
+  origin_category: string[]
+  allie_knockout_states: string[]
+  andra_knockout_states: string[]
+}
+
+export async function fetchTaxonomy(): Promise<TaxonomyData> {
+  const res = await fetch('/api/taxonomy')
+  if (!res.ok) throw new Error('Failed to fetch taxonomy from Notion')
+  return res.json()
 }
 
 export const AXIS_LABELS: Record<string, string> = {
@@ -120,11 +147,44 @@ export const AXIS_LABELS: Record<string, string> = {
   construction_stage: 'Construction Stage',
   product_type: 'Product Type',
   technology_type: 'Technology Type',
+  region: 'Region',
 }
 
-export const REGIONS = ['West US', 'Southwest US', 'Southeast US', 'Northeast US', 'Midwest US', 'International', 'International - Europe', 'Noncontiguous US', 'Unknown']
-export const ORIGIN_CATEGORIES = ['Automated Dealflow Search', 'Fund Fellows - Independent Research', 'Fund Fellows - Newsletter', 'Fund Fellows - Industry Events', 'Accelerators & Incubators', 'Hometeam Network', 'Harmonic_Automated Dealflow Search', 'Cold Inbound Via HTV Website', 'VC Co-investor', 'Cold Outreach', 'LP', 'Tracking Founders', 'Speaking Engagements', 'Unknown - DO NOT USE']
-export const KNOCKOUT_STATES = ['01_Pass', '02_Discuss', '03_Revisit - Need More Info', '04_Deck', '05_Fail']
+// Values that mean "not really tagged" per axis — mirrors the agent's own Tagging Comment schema.
+export const FILLER_VALUES: Record<string, string[]> = {
+  industry: ['NA', 'Out Of Scope'],
+  construction_stage: ['FILL IN', 'Other'],
+  product_type: ['Other'],
+  technology_type: ['Other'],
+  region: ['Unknown'],
+}
+
+const SCORE_AXES = ['industry', 'construction_stage', 'product_type', 'technology_type', 'region']
+
+function axisValues(company: Company, axis: string): string[] {
+  if (axis === 'region') return company.region
+  return company.tags.filter(t => t.axis === axis && t.is_accepted !== false).map(t => t.value)
+}
+
+function isAxisClean(company: Company, axis: string): boolean {
+  const values = axisValues(company, axis)
+  if (values.length === 0) return false
+  const filler = FILLER_VALUES[axis] ?? []
+  return !values.some(v => filler.includes(v))
+}
+
+export function computeScore(company: Company): { score: number; band: ScoreBand } {
+  let score = 0
+  const wordCount = company.description.trim().split(/\s+/).filter(Boolean).length
+  if (company.description.trim() && wordCount > 20) score += 40
+  if (company.location.trim()) score += 20
+  if (company.domain.trim()) score += 20
+  for (const axis of SCORE_AXES) {
+    if (isAxisClean(company, axis)) score += 4
+  }
+  const band: ScoreBand = score >= 80 ? 'high' : score >= 50 ? 'needs_review' : 'insufficient'
+  return { score, band }
+}
 
 const AXES = ['construction_stage', 'technology_type', 'product_type', 'industry']
 
@@ -158,13 +218,14 @@ const store: Company[] = [
     updated_at: '2025-06-12',
     domain: 'groforma.com',
     location: 'San Francisco, CA',
-    region: 'West US',
+    region: ['West US'],
     diversity_status: null,
     linkedin_url: 'https://linkedin.com/company/groforma',
     origin_source: 'LinkedIn',
     origin_category: 'Inbound',
     allie_knockout: null,
     andra_knockout: null,
+    tagged_by: 'Human',
     tags: [
       makeTag('industry', 'Commercial', 'human', 1, true),
       makeTag('construction_stage', 'On-site Construction', 'human', 1, true),
@@ -191,13 +252,14 @@ const store: Company[] = [
     updated_at: '2025-06-10',
     domain: 'tarahome.io',
     location: 'Austin, TX',
-    region: 'South US',
+    region: ['South US'],
     diversity_status: 'Not specified',
     linkedin_url: 'https://linkedin.com/company/tarahome',
     origin_source: 'Partner referral',
     origin_category: 'Referral',
     allie_knockout: null,
     andra_knockout: null,
+    tagged_by: 'AI Agent',
     tags: [
       makeTag('industry', 'Residential', 'llm', 0.79, null, 'Targets homeowners rather than commercial property managers.'),
       makeTag('construction_stage', 'Post-construction', 'llm', 0.88, null),
@@ -224,13 +286,14 @@ const store: Company[] = [
     updated_at: '2025-06-09',
     domain: 'feesback.com',
     location: 'New York, NY',
-    region: 'East US',
+    region: ['East US'],
     diversity_status: null,
     linkedin_url: null,
     origin_source: 'ConTech Summit 2025',
     origin_category: 'Conference',
     allie_knockout: '01_Pass',
     andra_knockout: null,
+    tagged_by: 'AI Agent',
     tags: [
       makeTag('industry', 'Commercial', 'llm', 0.65, null, 'Serves property transactions broadly, mostly commercial deals.'),
       makeTag('product_type', 'Software Platform', 'llm', 0.85, null),
@@ -257,13 +320,14 @@ const store: Company[] = [
     updated_at: '2025-06-07',
     domain: 'buildsafe.ai',
     location: 'Chicago, IL',
-    region: 'Midwest US',
+    region: ['Midwest US'],
     diversity_status: 'Woman-owned',
     linkedin_url: 'https://linkedin.com/company/buildsafeai',
     origin_source: 'LinkedIn',
     origin_category: 'Inbound',
     allie_knockout: '01_Pass',
     andra_knockout: '01_Pass',
+    tagged_by: 'Human',
     tags: [
       makeTag('industry', 'Industrial', 'human', 1, true),
       makeTag('construction_stage', 'On-site Construction', 'human', 1, true),
@@ -288,13 +352,14 @@ const store: Company[] = [
     updated_at: '2025-06-05',
     domain: 'test007.com',
     location: 'Denver, CO',
-    region: 'Mountain US',
+    region: ['Mountain US'],
     diversity_status: null,
     linkedin_url: null,
     origin_source: 'Cold email',
     origin_category: 'Outbound',
     allie_knockout: '05_Fail',
     andra_knockout: null,
+    tagged_by: 'AI Agent',
     tags: [
       makeTag('industry', 'Heavy Infrastructure', 'llm', 0.4, null, 'Low confidence — thesis fit is weak.'),
       makeTag('construction_stage', 'Sustainability/Demolition', 'llm', 0.55, null),
@@ -321,13 +386,14 @@ const store: Company[] = [
     updated_at: '2025-07-01',
     domain: 'newbuildco.com',
     location: 'Not specified',
-    region: 'Not specified',
+    region: ['Not specified'],
     diversity_status: null,
     linkedin_url: null,
     origin_source: 'Website contact form',
     origin_category: 'Inbound',
     allie_knockout: null,
     andra_knockout: null,
+    tagged_by: 'NA',
     tags: [],
     activity: [
       makeActivity('created', 'Added to database via Inbound Pipeline', '2025-07-01'),
@@ -368,7 +434,8 @@ function toListItem(c: Company): CompanyListItem {
     min_confidence: aiTags.length ? Math.min(...aiTags.map(t => t.confidence)) : null,
     has_pending: pending.length > 0,
     tag_count: c.tags.length,
-    region: c.region,
+    tagged_by: c.tagged_by,
+    region: c.region.length ? c.region.join('; ') : null,
     construction_stage: valuesFor('construction_stage'),
     technology_type: valuesFor('technology_type'),
     product_type: valuesFor('product_type'),
@@ -381,48 +448,27 @@ function toListItem(c: Company): CompanyListItem {
   }
 }
 
-function queueBadge(c: Company): QueueBadge {
-  if (c.tags.length === 0) return 'untagged'
-  const aiTags = c.tags.filter(t => t.source !== 'human' && t.is_accepted !== false)
-  if (!aiTags.length) return 'review'
-  const min = Math.min(...aiTags.map(t => t.confidence))
-  return min < 0.6 ? 'low' : 'review'
-}
-
-function queueIssue(c: Company): string {
-  if (c.tags.length === 0) return 'Not yet processed'
-  if (c.description.trim().length < 60) return 'Description too short'
-  const aiTags = c.tags.filter(t => t.source !== 'human' && t.is_accepted !== false)
-  if (!aiTags.length) return ''
-  const weakest = aiTags.reduce((min, t) => (t.confidence < min.confidence ? t : min))
-  return `${AXIS_LABELS[weakest.axis]} unclear`
-}
-
-function queueStale(c: Company): boolean {
-  const aiTags = c.tags.filter(t => t.source !== 'human' && t.is_accepted !== false)
-  if (!aiTags.length) return false
-  return Math.min(...aiTags.map(t => t.confidence)) < 0.7
-}
-
 function toQueueItem(c: Company): QueueListItem {
   const active = c.tags.filter(t => t.is_accepted !== false)
   const valuesFor = (axis: string) => active.filter(t => t.axis === axis).map(t => t.value)
+  const { score, band } = computeScore(c)
   return {
     id: c.id,
     external_id: c.external_id,
     name: c.name,
     description: c.description,
     updated_at: c.updated_at,
-    badge: queueBadge(c),
-    issue: queueIssue(c),
-    stale: queueStale(c),
+    tagged_by: c.tagged_by,
+    score,
+    band,
+    tagging_comment: c.tagging_comment,
+    tagging_action: c.tagging_action,
     industry: valuesFor('industry'),
     construction_stage: valuesFor('construction_stage'),
     product_type: valuesFor('product_type'),
     technology_type: valuesFor('technology_type'),
     region: c.region,
     tag_count: c.tags.length,
-    has_pending: c.tags.some(t => t.is_accepted === null && t.source !== 'human'),
   }
 }
 
@@ -434,7 +480,9 @@ export async function fetchQueue(params: {
   sort?: string
   filters?: Record<string, string[]>
 } = {}): Promise<{ total: number; items: QueueListItem[] }> {
-  const base = store.filter(c => c.tags.length === 0 || c.tags.some(t => t.is_accepted === null && t.source !== 'human'))
+  const realCompanies = await fetchRealCompanies()
+  // Queue = anything the agent has touched or hasn't touched yet — excludes only human-reviewed.
+  const base = realCompanies.filter(c => c.tagged_by !== 'Human')
   let items = base.map(toQueueItem)
 
   if (params.search) {
@@ -446,9 +494,8 @@ export async function fetchQueue(params: {
     )
   }
 
-  if (params.status === 'untagged') items = items.filter(i => i.tag_count === 0)
-  else if (params.status === 'pending') items = items.filter(i => i.has_pending)
-  else if (params.status === 'reviewed') items = items.filter(i => !i.has_pending && i.tag_count > 0)
+  if (params.status === 'untagged') items = items.filter(i => i.tagged_by === 'NA')
+  else if (params.status === 'pending') items = items.filter(i => i.tagged_by === 'AI Agent')
 
   if (params.filters) {
     for (const [axis, values] of Object.entries(params.filters)) {
@@ -461,9 +508,11 @@ export async function fetchQueue(params: {
     }
   }
 
-  const sort = params.sort ?? 'updated_desc'
+  const sort = params.sort ?? 'score_asc'
   if (sort === 'name_asc') items.sort((a, b) => a.name.localeCompare(b.name))
   else if (sort === 'name_desc') items.sort((a, b) => b.name.localeCompare(a.name))
+  else if (sort === 'score_asc') items.sort((a, b) => a.score - b.score)
+  else if (sort === 'score_desc') items.sort((a, b) => b.score - a.score)
   else items.sort((a, b) => b.updated_at.localeCompare(a.updated_at))
 
   const pageSize = params.pageSize ?? 20
@@ -478,6 +527,11 @@ export function isRealCompanyId(id: string): boolean {
 }
 
 let realCompaniesCache: Company[] | null = null
+let companiesCachedAt: number | null = null
+
+export function getCompaniesCachedAt(): number | null {
+  return companiesCachedAt
+}
 
 async function fetchRealCompanies(): Promise<Company[]> {
   if (realCompaniesCache) return realCompaniesCache
@@ -485,11 +539,38 @@ async function fetchRealCompanies(): Promise<Company[]> {
   if (!res.ok) throw new Error('Failed to fetch companies from Notion')
   const data = await res.json()
   realCompaniesCache = data.companies as Company[]
+  companiesCachedAt = data.cached_at ?? Date.now()
   return realCompaniesCache
 }
 
 export function invalidateCompaniesCache() {
   realCompaniesCache = null
+}
+
+// Mirrors the backend's MIN_REFRESH_INTERVAL_MS — used to disable the Refresh button
+// client-side so the UI cooldown matches what the server will actually honor.
+export const REFRESH_COOLDOWN_S = 60
+
+// Forces a live re-fetch past both the frontend cache and the backend's 1h TTL,
+// for a manual "Refresh" action rather than waiting on the background cache cycle.
+export async function refreshCompanies(): Promise<Company[]> {
+  const res = await fetch('/api/companies?refresh=1')
+  if (!res.ok) throw new Error('Failed to refresh companies from Notion')
+  const data = await res.json()
+  realCompaniesCache = data.companies as Company[]
+  companiesCachedAt = data.cached_at ?? Date.now()
+  return realCompaniesCache
+}
+
+// "5 mins ago" style relative time, for showing when the company list was last pulled from Notion.
+export function formatRelativeTime(timestamp: number): string {
+  const diffMs = Date.now() - timestamp
+  const diffMin = Math.floor(diffMs / 60000)
+  if (diffMin < 1) return 'just now'
+  if (diffMin === 1) return '1 min ago'
+  if (diffMin < 60) return `${diffMin} mins ago`
+  const diffHr = Math.floor(diffMin / 60)
+  return diffHr === 1 ? '1 hour ago' : `${diffHr} hours ago`
 }
 
 export async function fetchCompany(id: string): Promise<Company> {
@@ -555,7 +636,7 @@ export async function fetchCompanies(params: {
       items = items.filter(i => {
         const field = (i as unknown as Record<string, string | null>)[axis]
         if (!field) return false
-        return axis === 'region' ? values.includes(field) : values.some(v => field.split('; ').includes(v))
+        return values.some(v => field.split('; ').includes(v))
       })
     }
   }
@@ -589,11 +670,11 @@ export async function createCompany(data: {
   const company: Company = {
     id, external_id, name: data.name, description: data.description ?? '',
     priority: 'review', updated_at: new Date().toISOString().slice(0, 10),
-    domain: data.domain, location: 'Not specified', region: 'Not specified',
+    domain: data.domain, location: 'Not specified', region: ['Not specified'],
     diversity_status: null, linkedin_url: null,
     origin_source: data.origin_source ?? '',
     origin_category: data.origin_category || null,
-    allie_knockout: null, andra_knockout: null,
+    allie_knockout: null, andra_knockout: null, tagged_by: 'NA',
     tags: [], activity: [], notes: [], tagging_comment: [], tagging_action: null,
   }
   logActivity(company, 'created', `Added to database via ${data.origin_category || 'Manual Entry'}`)
@@ -620,7 +701,7 @@ export interface CompanyUpdate {
   origin_category: string | null
   allie_knockout: KnockoutStatus
   andra_knockout: KnockoutStatus
-  region: string
+  region: string[]
   industry: string[]
   construction_stage: string[]
   product_type: string[]

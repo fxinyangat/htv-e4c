@@ -1,6 +1,6 @@
 import { useState, ReactNode } from 'react'
-import { X, MoreVertical, Pencil, Trash2, ExternalLink, Bot, UserRound, CheckCircle2, AlertTriangle, PlusCircle, Sparkles, Send, Bell, CalendarClock } from 'lucide-react'
-import { Company, Tag, ActivityType, deleteCompany, addNote, deleteNote, isRealCompanyId } from '../api'
+import { X, MoreVertical, Pencil, Trash2, ExternalLink, Bot, UserRound, HelpCircle, CheckCircle2, AlertTriangle, XCircle, PlusCircle, Sparkles, Send, Bell, CalendarClock } from 'lucide-react'
+import { Company, ActivityType, ScoreBand, computeScore, deleteCompany, addNote, deleteNote, isRealCompanyId } from '../api'
 import EditCompanyModal from './EditCompanyModal'
 import ConfirmDeleteModal from './ConfirmDeleteModal'
 import { useToast } from '../context/ToastContext'
@@ -56,17 +56,19 @@ const REMINDER_META: Record<ReturnType<typeof reminderStatus>, string> = {
   upcoming: 'bg-ht-blue/5 text-ht-blue/60 ring-ht-blue/10',
 }
 
-function taggedBy(tags: Tag[]): 'Human' | 'AI Agent' {
-  return tags.some(t => t.source === 'human') ? 'Human' : 'AI Agent'
+// Reads the real "Tagged By" value from Notion directly, rather than inferring it from tags.
+function taggedByMeta(taggedBy: string): { label: string; cls: string; icon: typeof Bot } {
+  if (taggedBy === 'Human') return { label: 'Human', cls: 'bg-emerald-50 text-emerald-700 ring-emerald-600/20', icon: UserRound }
+  if (taggedBy === 'AI Agent') return { label: 'AI Agent', cls: 'bg-indigo-50 text-indigo-700 ring-indigo-600/20', icon: Bot }
+  return { label: 'Untagged', cls: 'bg-ht-blue/5 text-ht-blue/50 ring-ht-blue/10', icon: HelpCircle }
 }
 
-function confidenceInfo(tags: Tag[]) {
-  const aiTags = tags.filter(t => t.source !== 'human')
-  if (aiTags.length === 0) return { label: 'Human Verified', cls: 'bg-emerald-50 text-emerald-700 ring-emerald-600/20', icon: CheckCircle2 }
-  const min = Math.min(...aiTags.map(t => t.confidence))
-  if (min >= 0.85) return { label: 'High Confidence', cls: 'bg-emerald-50 text-emerald-700 ring-emerald-600/20', icon: CheckCircle2 }
-  if (min >= 0.6) return { label: 'Needs Review', cls: 'bg-amber-50 text-amber-700 ring-amber-600/20', icon: AlertTriangle }
-  return { label: 'Low Confidence', cls: 'bg-red-50 text-red-600 ring-red-600/20', icon: AlertTriangle }
+// Same data-completeness scoring used in the Review Queue — Notion doesn't give us a real
+// per-tag AI confidence score, so this reuses the score/band the queue already computes.
+const SCORE_BADGE_META: Record<ScoreBand, { label: string; cls: string; icon: typeof CheckCircle2 }> = {
+  high: { label: 'High', cls: 'bg-emerald-50 text-emerald-700 ring-emerald-600/20', icon: CheckCircle2 },
+  needs_review: { label: 'Needs Review', cls: 'bg-amber-50 text-amber-700 ring-amber-600/20', icon: AlertTriangle },
+  insufficient: { label: 'Insufficient Data', cls: 'bg-red-50 text-red-600 ring-red-600/20', icon: XCircle },
 }
 
 function InfoRow({ label, children }: { label: string; children: ReactNode }) {
@@ -145,8 +147,9 @@ export default function CompanyDetailPanel({ company, onClose, onDeleted, onUpda
 
   const active = company.tags.filter(t => t.is_accepted !== false)
   const valuesFor = (axis: string) => active.filter(t => t.axis === axis).map(t => t.value)
-  const tb = taggedBy(company.tags)
-  const conf = confidenceInfo(company.tags)
+  const tb = taggedByMeta(company.tagged_by)
+  const { score, band } = computeScore(company)
+  const conf = SCORE_BADGE_META[band]
 
   return (
     <div className="fixed top-24 right-6 bottom-6 w-full max-w-xl bg-white rounded-3xl shadow-2xl border border-white z-40 flex flex-col overflow-hidden">
@@ -220,7 +223,9 @@ export default function CompanyDetailPanel({ company, onClose, onDeleted, onUpda
       <div className="flex-1 overflow-y-auto custom-scrollbar px-8 py-6">
         {tab === 'details' && (
           <div className="space-y-7">
-            <p className="text-sm text-ht-blue/80 leading-relaxed border-l-2 border-ht-orange pl-4">{company.description}</p>
+            <p className="text-sm text-ht-blue/80 leading-relaxed border-l-2 border-ht-orange pl-4">
+              {company.description.trim() || <span className="text-ht-blue/30 italic">No company description available.</span>}
+            </p>
 
             <section>
               <h4 className="text-[11px] font-bold text-ht-blue/40 uppercase tracking-widest mb-1">Classification</h4>
@@ -238,9 +243,15 @@ export default function CompanyDetailPanel({ company, onClose, onDeleted, onUpda
                     </InfoRow>
                   )
                 })}
-                <InfoRow label="Region">
-                  <span className="px-2.5 py-1 rounded-lg bg-ht-blue/5 text-ht-blue text-xs font-medium">{company.region}</span>
-                </InfoRow>
+                {company.region.length > 0 && (
+                  <InfoRow label="Region">
+                    <div className="flex flex-wrap gap-1.5 justify-end">
+                      {company.region.map(v => (
+                        <span key={v} className="px-2.5 py-1 rounded-lg bg-ht-blue/5 text-ht-blue text-xs font-medium">{v}</span>
+                      ))}
+                    </div>
+                  </InfoRow>
+                )}
               </div>
             </section>
 
@@ -252,19 +263,23 @@ export default function CompanyDetailPanel({ company, onClose, onDeleted, onUpda
                     ? <a href={`https://${company.domain}`} target="_blank" rel="noreferrer" className="text-ht-orange hover:underline inline-flex items-center gap-1">{company.domain} <ExternalLink className="w-3 h-3" /></a>
                     : <span className="text-ht-blue/30">—</span>}
                 </InfoRow>
-                <InfoRow label="Location">{company.location}</InfoRow>
+                <InfoRow label="Location">
+                  {company.location.trim() || <span className="text-ht-blue/30">Not specified</span>}
+                </InfoRow>
                 <InfoRow label="Diversity Status">{company.diversity_status ?? 'Not specified'}</InfoRow>
                 <InfoRow label="LinkedIn">
                   {company.linkedin_url
                     ? <a href={company.linkedin_url} target="_blank" rel="noreferrer" className="text-ht-orange hover:underline inline-flex items-center gap-1">View profile <ExternalLink className="w-3 h-3" /></a>
                     : <span className="text-ht-blue/30">—</span>}
                 </InfoRow>
-                <InfoRow label="Origin Source">{company.origin_source}</InfoRow>
+                <InfoRow label="Origin Source">
+                  {company.origin_source.trim() || <span className="text-ht-blue/30">Not specified</span>}
+                </InfoRow>
                 <InfoRow label="Allie Knockout Pass/Fail">
-                  {company.allie_knockout ?? <span className="text-ht-blue/30">Pass / Fail</span>}
+                  {company.allie_knockout ?? <span className="text-ht-blue/30">Not specified</span>}
                 </InfoRow>
                 <InfoRow label="Andra Knockout Pass/Fail">
-                  {company.andra_knockout ?? <span className="text-ht-blue/30">Pass / Fail</span>}
+                  {company.andra_knockout ?? <span className="text-ht-blue/30">Not specified</span>}
                 </InfoRow>
               </div>
             </section>
@@ -273,14 +288,17 @@ export default function CompanyDetailPanel({ company, onClose, onDeleted, onUpda
               <h4 className="text-[11px] font-bold text-ht-blue/40 uppercase tracking-widest mb-1">Metadata</h4>
               <div className="divide-y divide-ht-blue/5">
                 <InfoRow label="Tagged By">
-                  <span className={`inline-flex items-center gap-1.5 px-2.5 py-1 rounded-full text-xs font-semibold ring-1 ring-inset ${tb === 'Human' ? 'bg-emerald-50 text-emerald-700 ring-emerald-600/20' : 'bg-indigo-50 text-indigo-700 ring-indigo-600/20'}`}>
-                    {tb === 'Human' ? <UserRound className="w-3.5 h-3.5" /> : <Bot className="w-3.5 h-3.5" />} {tb}
+                  <span className={`inline-flex items-center gap-1.5 px-2.5 py-1 rounded-full text-xs font-semibold ring-1 ring-inset ${tb.cls}`}>
+                    <tb.icon className="w-3.5 h-3.5" /> {tb.label}
                   </span>
                 </InfoRow>
                 <InfoRow label="Confidence">
-                  <span className={`inline-flex items-center gap-1.5 px-2.5 py-1 rounded-full text-xs font-semibold ring-1 ring-inset ${conf.cls}`}>
-                    <conf.icon className="w-3.5 h-3.5" /> {conf.label}
-                  </span>
+                  <div className="flex flex-col items-end gap-1">
+                    <span className={`inline-flex items-center gap-1.5 px-2.5 py-1 rounded-full text-xs font-semibold ring-1 ring-inset ${conf.cls}`}>
+                      <conf.icon className="w-3.5 h-3.5" /> {conf.label}
+                    </span>
+                    <span className="text-[11px] text-ht-blue/40">{score}/100</span>
+                  </div>
                 </InfoRow>
                 <InfoRow label="Date Added">{formatDate(company.updated_at)}</InfoRow>
               </div>

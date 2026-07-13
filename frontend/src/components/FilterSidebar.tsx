@@ -1,5 +1,6 @@
 import { Check, ChevronDown, ChevronRight } from 'lucide-react'
-import { TAXONOMY, AXIS_LABELS, REGIONS } from '../api'
+import { AXIS_LABELS } from '../api'
+import { useTaxonomy } from '../context/TaxonomyContext'
 
 export const STATUS_OPTIONS: { value: string; label: string; dot?: string }[] = [
   { value: 'all', label: 'All Companies' },
@@ -22,6 +23,7 @@ interface Props {
 export default function FilterSidebar({
   status, setStatus, filters, toggleFilter, expandedCats, setExpandedCats, activeFilterCount, clearFilters,
 }: Props) {
+  const { taxonomy } = useTaxonomy()
   return (
     <aside className="w-56 shrink-0 flex flex-col bg-white/50 backdrop-blur-sm rounded-2xl border border-ht-blue/5 shadow-sm overflow-hidden h-[calc(100vh-8rem)] sticky top-24">
       <div className="p-5 flex-1 overflow-y-auto custom-scrollbar space-y-8">
@@ -49,13 +51,13 @@ export default function FilterSidebar({
               <button onClick={clearFilters} className="text-xs font-medium text-ht-orange hover:text-ht-orange/80">Clear all</button>
             )}
           </div>
-          {[...Object.entries(TAXONOMY), ['region', REGIONS] as [string, string[]]].map(([axis, tags]) => (
+          {Object.entries(taxonomy).map(([axis, tags]) => (
             <div key={axis} className="mb-4 last:mb-0">
               <button
                 onClick={() => setExpandedCats(prev => ({ ...prev, [axis]: !prev[axis] }))}
                 className="w-full flex items-center justify-between mb-2 group"
               >
-                <p className="text-xs font-semibold text-ht-blue/60 group-hover:text-ht-blue transition-colors">{axis === 'region' ? 'Region' : AXIS_LABELS[axis]}</p>
+                <p className="text-xs font-semibold text-ht-blue/60 group-hover:text-ht-blue transition-colors">{AXIS_LABELS[axis]}</p>
                 <span className="text-ht-blue/40 flex items-center">{expandedCats[axis] ? <ChevronDown className="w-4 h-4" /> : <ChevronRight className="w-4 h-4" />}</span>
               </button>
               {expandedCats[axis] && (

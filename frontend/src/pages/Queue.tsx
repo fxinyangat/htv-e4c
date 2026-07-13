@@ -1,24 +1,40 @@
 import { useEffect, useState } from 'react'
 import {
-  Search, X, PartyPopper, Loader2, ChevronDown, ShieldAlert, ShieldX, Tag as TagIcon, CheckCircle2, Bot,
+  Search, X, PartyPopper, Loader2, ChevronDown, CheckCircle2, AlertTriangle, XCircle, Bot, UserRound, HelpCircle, RefreshCw,
 } from 'lucide-react'
 import {
-  fetchQueue, fetchCompany, updateCompany, QueueListItem, Company, QueueBadge, TAXONOMY, AXIS_LABELS, REGIONS,
+  fetchQueue, fetchCompany, updateCompany, refreshCompanies, REFRESH_COOLDOWN_S, getCompaniesCachedAt, formatRelativeTime, isRealCompanyId, QueueListItem, Company, ScoreBand, AXIS_LABELS,
 } from '../api'
 import FilterSidebar from '../components/FilterSidebar'
 import { useToast } from '../context/ToastContext'
+import { useTaxonomy } from '../context/TaxonomyContext'
 
-const BADGE_META: Record<QueueBadge, { label: string; cls: string; icon: typeof ShieldAlert }> = {
-  review: { label: 'Review', cls: 'bg-amber-50 text-amber-700 ring-amber-600/20', icon: ShieldAlert },
-  low: { label: 'Low', cls: 'bg-red-50 text-red-600 ring-red-600/20', icon: ShieldX },
-  untagged: { label: 'Untagged', cls: 'bg-gray-100 text-gray-600 ring-gray-500/10', icon: TagIcon },
+const SCORE_BADGE_META: Record<ScoreBand, { label: string; cls: string; icon: typeof CheckCircle2 }> = {
+  high: { label: 'High', cls: 'bg-emerald-50 text-emerald-700 ring-emerald-600/20', icon: CheckCircle2 },
+  needs_review: { label: 'Needs Review', cls: 'bg-amber-50 text-amber-700 ring-amber-600/20', icon: AlertTriangle },
+  insufficient: { label: 'Insufficient Data', cls: 'bg-red-50 text-red-600 ring-red-600/20', icon: XCircle },
 }
 
-function badgePill(badge: QueueBadge) {
-  const { label, cls, icon: Icon } = BADGE_META[badge]
+function scoreBadge(band: ScoreBand) {
+  const { label, cls, icon: Icon } = SCORE_BADGE_META[band]
   return (
     <span className={`inline-flex items-center gap-1.5 px-2.5 py-1 rounded-full text-xs font-semibold ring-1 ring-inset ${cls}`}>
       <Icon className="w-3.5 h-3.5" /> {label}
+    </span>
+  )
+}
+
+const TAGGED_BY_ICON_META: Record<string, { icon: typeof Bot; cls: string; title: string }> = {
+  'Human': { icon: UserRound, cls: 'text-emerald-600', title: 'Tagged by Human' },
+  'AI Agent': { icon: Bot, cls: 'text-indigo-600', title: 'Tagged by AI Agent' },
+  'NA': { icon: HelpCircle, cls: 'text-ht-blue/30', title: 'Untagged' },
+}
+
+function taggedByIcon(taggedBy: string) {
+  const { icon: Icon, cls, title } = TAGGED_BY_ICON_META[taggedBy] ?? TAGGED_BY_ICON_META['NA']
+  return (
+    <span title={title} className="inline-flex items-center">
+      <Icon className={`w-4 h-4 shrink-0 ${cls}`} />
     </span>
   )
 }
@@ -56,13 +72,12 @@ function primaryPills(item: QueueListItem) {
 
 const HIGH_SEVERITY_LABELS = ['Industry', 'Stage', 'Construction Stage']
 
-function taggingCommentBlock(company: Company) {
-  if (company.tagging_comment.length === 0 && !company.tagging_action) return null
+function taggingCommentBlock(item: QueueListItem) {
+  if (item.tagging_comment.length === 0 && !item.tagging_action) return null
 
-  const highSeverity = company.tagging_comment.some(line => HIGH_SEVERITY_LABELS.includes(line.label))
+  const highSeverity = item.tagging_comment.some(line => HIGH_SEVERITY_LABELS.includes(line.label))
   const bg = highSeverity ? '#FFF5F5' : '#FFFBEB'
   const border = highSeverity ? '#FECACA' : '#F5D87A'
-
   const text = '#92400E'
 
   return (
@@ -73,14 +88,14 @@ function taggingCommentBlock(company: Company) {
       </div>
 
       <div style={{ lineHeight: 1.6 }}>
-        {company.tagging_comment.map((line, i) => (
+        {item.tagging_comment.map((line, i) => (
           <p key={i} className="text-xs" style={{ color: text }}>
             • {line.label} — {line.note}
           </p>
         ))}
-        {company.tagging_action && (
+        {item.tagging_action && (
           <p className="text-xs" style={{ color: text }}>
-            → {company.tagging_action}
+            → {item.tagging_action}
           </p>
         )}
       </div>
@@ -89,6 +104,8 @@ function taggingCommentBlock(company: Company) {
 }
 
 const SORT_OPTIONS = [
+  { value: 'score_asc', label: 'Lowest Score First' },
+  { value: 'score_desc', label: 'Highest Score First' },
   { value: 'updated_desc', label: 'Recently Modified' },
   { value: 'name_asc', label: 'Name (A-Z)' },
   { value: 'name_desc', label: 'Name (Z-A)' },
@@ -106,7 +123,7 @@ interface AxisState {
   construction_stage: string[]
   product_type: string[]
   technology_type: string[]
-  region: string
+  region: string[]
 }
 
 function AddChipPopover({ options, onPick }: { options: string[]; onPick: (v: string) => void }) {
@@ -173,22 +190,13 @@ function AxisRow({
   )
 }
 
-function RegionRow({ value, onChange }: { value: string; onChange: (v: string) => void }) {
-  return (
-    <div className="flex items-center justify-between gap-4 py-3">
-      <span className="text-[10px] font-bold uppercase tracking-widest shrink-0 w-32 text-ht-blue/40">Region</span>
-      <div className="flex-1 flex flex-wrap items-center gap-1.5">
-        <span className="inline-flex items-center gap-1 px-2.5 py-1 rounded-full bg-ht-blue/5 text-ht-blue text-xs font-medium">
-          {value}
-          <button type="button" onClick={() => onChange('Not specified')} className="hover:text-red-600 transition-colors">
-            <X className="w-3 h-3" />
-          </button>
-        </span>
-      </div>
-      <AddChipPopover options={REGIONS.filter(r => r !== value)} onPick={onChange} />
-    </div>
-  )
-}
+const AXIS_ROWS: [keyof AxisState, string][] = [
+  ['industry', AXIS_LABELS.industry],
+  ['construction_stage', AXIS_LABELS.construction_stage],
+  ['product_type', AXIS_LABELS.product_type],
+  ['technology_type', AXIS_LABELS.technology_type],
+  ['region', AXIS_LABELS.region],
+]
 
 function QueueRow({
   item, expanded, onToggle, onApproved,
@@ -199,6 +207,7 @@ function QueueRow({
   onApproved: () => void
 }) {
   const { showToast } = useToast()
+  const { taxonomy } = useTaxonomy()
   const [company, setCompany] = useState<Company | null>(null)
   const [state, setState] = useState<AxisState | null>(null)
   const [loading, setLoading] = useState(false)
@@ -224,6 +233,10 @@ function QueueRow({
 
   async function handleApprove() {
     if (!company || !state) return
+    if (isRealCompanyId(company.id)) {
+      showToast('info', 'Not connected yet', 'Approving Notion-backed companies isn\'t wired up yet — this will write Tagged By → Human once connected.')
+      return
+    }
     setSaving(true)
     await updateCompany(company.id, {
       name: company.name,
@@ -251,23 +264,22 @@ function QueueRow({
       <div onClick={onToggle} className="p-6 flex items-center justify-between gap-6 cursor-pointer">
         <div className="min-w-0 flex-1">
           <h3 className="font-display font-semibold text-ht-blue text-base">{item.name}</h3>
-          <p className="text-sm text-ht-blue/60 mt-1 line-clamp-1">{item.description}</p>
-          {expanded ? (company && taggingCommentBlock(company)) : primaryPills(item)}
+          <p className="text-sm text-ht-blue/60 mt-1 line-clamp-1">
+            {item.description.trim() || <span className="italic text-ht-blue/30">No company description</span>}
+          </p>
+          {expanded ? taggingCommentBlock(item) : primaryPills(item)}
         </div>
         <div className="flex items-center gap-3 shrink-0">
           <div className="flex flex-col items-end gap-1.5">
-            {badgePill(item.badge)}
-            {expanded ? (
-              <span className="text-xs text-ht-blue/40">{formatDate(item.updated_at)}</span>
-            ) : (
-              <>
-                <span className={`text-xs flex items-center gap-1.5 ${item.stale ? 'text-red-500' : 'text-ht-blue/40'}`}>
-                  {item.stale && <span className="w-1.5 h-1.5 rounded-full bg-red-500" />}
-                  {item.issue || formatDate(item.updated_at)}
-                </span>
-                {item.issue && <span className="text-xs text-ht-blue/40">{formatDate(item.updated_at)}</span>}
-              </>
-            )}
+            <div className="flex items-center gap-2.5">
+              {scoreBadge(item.band)}
+              {taggedByIcon(item.tagged_by)}
+            </div>
+            <span className={`text-xs flex items-center gap-1.5 ${item.band === 'insufficient' ? 'text-red-500' : 'text-ht-blue/40'}`}>
+              {item.band === 'insufficient' && <span className="w-1.5 h-1.5 rounded-full bg-red-500" />}
+              {item.score}/100
+            </span>
+            <span className="text-xs text-ht-blue/40">{formatDate(item.updated_at)}</span>
           </div>
           <ChevronDown className={`w-4 h-4 text-ht-blue/40 transition-transform ${expanded ? 'rotate-180' : ''}`} />
         </div>
@@ -281,15 +293,15 @@ function QueueRow({
             </div>
           ) : (
             <>
-              <AxisRow label={AXIS_LABELS.industry} values={state.industry} options={TAXONOMY.industry}
-                onChange={v => setState(s => s && { ...s, industry: v })} />
-              <AxisRow label="Stage" values={state.construction_stage} options={TAXONOMY.construction_stage}
-                onChange={v => setState(s => s && { ...s, construction_stage: v })} />
-              <AxisRow label={AXIS_LABELS.product_type} values={state.product_type} options={TAXONOMY.product_type}
-                onChange={v => setState(s => s && { ...s, product_type: v })} />
-              <AxisRow label="Tech Type" values={state.technology_type} options={TAXONOMY.technology_type}
-                onChange={v => setState(s => s && { ...s, technology_type: v })} />
-              <RegionRow value={state.region} onChange={v => setState(s => s && { ...s, region: v })} />
+              {AXIS_ROWS.map(([axis, label]) => (
+                <AxisRow
+                  key={axis}
+                  label={label}
+                  values={state[axis]}
+                  options={taxonomy[axis]}
+                  onChange={v => setState(s => s && { ...s, [axis]: v })}
+                />
+              ))}
 
               <div className="flex justify-end pt-4">
                 <button
@@ -309,18 +321,20 @@ function QueueRow({
 }
 
 export default function Queue() {
+  const { taxonomy } = useTaxonomy()
+  const { showToast } = useToast()
   const [items, setItems] = useState<QueueListItem[]>([])
   const [total, setTotal] = useState(0)
   const [page, setPage] = useState(1)
   const [search, setSearch] = useState('')
   const [searchInput, setSearchInput] = useState('')
   const [status, setStatus] = useState('all')
-  const [sort, setSort] = useState('updated_desc')
+  const [sort, setSort] = useState('score_asc')
   const [filters, setFilters] = useState<Record<string, string[]>>({})
   const [loading, setLoading] = useState(true)
   const [expandedId, setExpandedId] = useState<string | null>(null)
   const [expandedCats, setExpandedCats] = useState<Record<string, boolean>>(
-    Object.keys(TAXONOMY).reduce((acc, key) => ({ ...acc, [key]: false }), {})
+    Object.keys(taxonomy).reduce((acc, key) => ({ ...acc, [key]: false }), {})
   )
 
   const filterKey = JSON.stringify(filters)
@@ -335,6 +349,37 @@ export default function Queue() {
 
   useEffect(() => { load(1); setPage(1) }, [search, status, filterKey, sort])
   useEffect(() => { load() }, [page])
+
+  const [refreshing, setRefreshing] = useState(false)
+  const [cooldown, setCooldown] = useState(0) // seconds left before Refresh is clickable again
+  const [, tick] = useState(0) // re-render periodically so the "X ago" label stays current
+
+  useEffect(() => {
+    if (cooldown <= 0) return
+    const t = setInterval(() => setCooldown(s => Math.max(0, s - 1)), 1000)
+    return () => clearInterval(t)
+  }, [cooldown])
+
+  useEffect(() => {
+    const t = setInterval(() => tick(n => n + 1), 15000)
+    return () => clearInterval(t)
+  }, [])
+
+  async function handleRefresh() {
+    if (refreshing || cooldown > 0) return
+    setRefreshing(true)
+    try {
+      await refreshCompanies()
+      await load(page)
+      showToast('success', 'Refreshed', 'Latest company data pulled from Notion.')
+    } catch (err) {
+      console.error('Failed to refresh companies from Notion:', err)
+      showToast('error', 'Refresh failed', 'Could not pull the latest data from Notion.')
+    } finally {
+      setRefreshing(false)
+      setCooldown(REFRESH_COOLDOWN_S)
+    }
+  }
 
   const activeFilterCount = Object.values(filters).reduce((n, tags) => n + tags.length, 0)
 
@@ -368,9 +413,6 @@ export default function Queue() {
       <div className="flex-1 min-w-0 space-y-4">
         <div className="flex items-center justify-between">
           <h1 className="text-3xl font-display font-semibold text-ht-blue tracking-tight">Review Queue</h1>
-          <p className="text-sm text-ht-blue/50">
-            <span className="font-semibold text-ht-blue">{total}</span> companies awaiting review
-          </p>
         </div>
 
         <div className="flex items-center gap-3">
@@ -403,6 +445,21 @@ export default function Queue() {
               <option key={opt.value} value={opt.value}>{opt.label}</option>
             ))}
           </select>
+          <div className="relative ml-auto">
+            <button
+              onClick={handleRefresh}
+              disabled={refreshing || cooldown > 0}
+              className="px-4 py-2.5 bg-white text-ht-blue font-medium text-sm rounded-xl border border-ht-blue/10 hover:bg-ht-blue/5 hover:border-ht-blue/20 transition-all shadow-sm flex items-center gap-2 disabled:opacity-50"
+            >
+              <RefreshCw className={`w-4 h-4 ${refreshing ? 'animate-spin' : ''}`} />
+              {refreshing ? 'Refreshing…' : cooldown > 0 ? `Refresh (${cooldown}s)` : 'Refresh'}
+            </button>
+            {getCompaniesCachedAt() && (
+              <span className="absolute top-full left-1/2 -translate-x-1/2 mt-1 text-[11px] text-ht-blue/40 whitespace-nowrap">
+                {formatRelativeTime(getCompaniesCachedAt()!)}
+              </span>
+            )}
+          </div>
         </div>
 
         {loading ? (

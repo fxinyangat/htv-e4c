@@ -50,7 +50,15 @@ export function readUrl(prop) {
   return prop?.url || null
 }
 
-export async function fetchAllPages(databaseId, pageCap = 1000) {
+// Reads the configured dropdown options off a select/multi_select property definition
+// (as returned by GET /databases/:id), not off a page's property value.
+export function readOptions(propDef) {
+  if (!propDef) return []
+  const type = propDef.type
+  return (propDef[type]?.options || []).map(o => o.name)
+}
+
+export async function fetchAllPages(databaseId) {
   const results = []
   let cursor
   do {
@@ -64,6 +72,6 @@ export async function fetchAllPages(databaseId, pageCap = 1000) {
     })
     results.push(...data.results)
     cursor = data.has_more ? data.next_cursor : null
-  } while (cursor && results.length < pageCap)
+  } while (cursor)
   return results
 }
