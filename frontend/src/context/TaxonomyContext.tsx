@@ -5,8 +5,9 @@ import {
   DEFAULT_ALLIE_KNOCKOUT_STATES, DEFAULT_ANDRA_KNOCKOUT_STATES,
 } from '../api'
 
-// Bumped to v2 when allie/andra knockout states were split — v1 cache entries lack those fields.
-const CACHE_KEY = 'htv_taxonomy_cache_v2'
+// Bumped to v3 after a mid-session backend change split allie/andra knockout states — some v2
+// caches were written moments before that backend deploy landed and are missing those fields.
+const CACHE_KEY = 'htv_taxonomy_cache_v3'
 const CACHE_TTL_MS = 24 * 60 * 60 * 1000 // 24h — schema rarely changes, refetched in the background beyond this
 
 const FALLBACK: TaxonomyData = {
@@ -32,13 +33,26 @@ interface TaxonomyContextType {
 
 const TaxonomyContext = createContext<TaxonomyContextType | undefined>(undefined)
 
+const REQUIRED_KEYS: (keyof TaxonomyData)[] = [
+  'industry', 'construction_stage', 'product_type', 'technology_type',
+  'region', 'origin_category', 'allie_knockout_states', 'andra_knockout_states',
+]
+
+function isValidTaxonomyData(data: unknown): data is TaxonomyData {
+  if (!data || typeof data !== 'object') return false
+  return REQUIRED_KEYS.every(key => Array.isArray((data as Record<string, unknown>)[key]))
+}
+
 function readCache(): TaxonomyData | null {
   try {
     const raw = localStorage.getItem(CACHE_KEY)
     if (!raw) return null
     const { data, timestamp } = JSON.parse(raw)
     if (Date.now() - timestamp > CACHE_TTL_MS) return null
-    return data as TaxonomyData
+    // Guards against a cache written moments before a backend schema change lands —
+    // a shape mismatch here should fall back to a fresh fetch, never crash a render.
+    if (!isValidTaxonomyData(data)) return null
+    return data
   } catch {
     return null
   }

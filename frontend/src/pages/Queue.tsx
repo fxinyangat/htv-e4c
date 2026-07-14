@@ -277,7 +277,7 @@ function QueueRow({
       <div onClick={onToggle} className="p-6 flex items-center justify-between gap-6 cursor-pointer">
         <div className="min-w-0 flex-1">
           <h3 className="font-display font-semibold text-ht-blue text-base">{item.name}</h3>
-          <p className="text-sm text-ht-blue/60 mt-1 line-clamp-1">
+          <p className={`text-sm text-ht-blue/60 mt-1 ${expanded ? '' : 'line-clamp-1'}`}>
             {item.description.trim() || <span className="italic text-ht-blue/30">No company description</span>}
           </p>
           {expanded ? taggingCommentBlock(item) : primaryPills(item)}

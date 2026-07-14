@@ -572,21 +572,42 @@ export interface AxisApproval {
   region: string[]
 }
 
-// Approve Tags for a real Notion company: marks it human-reviewed and persists the (possibly
-// human-corrected) classification axes. Deliberately narrow — see backend PATCH /api/companies/:id.
-export async function approveCompanyTags(id: string, axes: AxisApproval): Promise<Company> {
+// Shared write path for real Notion companies — backend PATCH /api/companies/:id only touches
+// whichever fields are present in the body, and always marks the company Tagged By → Human
+// since this is only ever called from human-initiated actions (Approve Tags, Edit Save).
+async function patchRealCompany(id: string, fields: AxisApproval | CompanyUpdate): Promise<Company> {
   const res = await fetch(`/api/companies/${id}`, {
     method: 'PATCH',
     headers: { 'Content-Type': 'application/json' },
-    body: JSON.stringify(axes),
+    body: JSON.stringify(fields),
   })
-  if (!res.ok) throw new Error('Failed to approve tags in Notion')
+  if (!res.ok) throw new Error('Failed to save changes to Notion')
   const updated = await res.json() as Company
   if (realCompaniesCache) {
     const idx = realCompaniesCache.findIndex(c => c.id === id)
     if (idx !== -1) realCompaniesCache[idx] = updated
   }
   return updated
+}
+
+// Approve Tags: marks a company human-reviewed and persists the (possibly human-corrected)
+// classification axes. Deliberately narrow — never touches name/description/domain/etc.
+export async function approveCompanyTags(id: string, axes: AxisApproval): Promise<Company> {
+  return patchRealCompany(id, axes)
+}
+
+// Edit Save: writes the full editable record for a real Notion company.
+export async function updateRealCompany(id: string, update: CompanyUpdate): Promise<Company> {
+  return patchRealCompany(id, update)
+}
+
+// "Delete" = archive in Notion — soft, reversible from within Notion itself.
+export async function deleteRealCompany(id: string): Promise<void> {
+  const res = await fetch(`/api/companies/${id}`, { method: 'DELETE' })
+  if (!res.ok) throw new Error('Failed to delete company in Notion')
+  if (realCompaniesCache) {
+    realCompaniesCache = realCompaniesCache.filter(c => c.id !== id)
+  }
 }
 
 // "5 mins ago" style relative time, for showing when the company list was last pulled from Notion.
@@ -602,6 +623,10 @@ export function formatRelativeTime(timestamp: number): string {
 
 export async function fetchCompany(id: string): Promise<Company> {
   if (isRealCompanyId(id)) {
+    // The company list already pulled the full record into realCompaniesCache — reuse it
+    // instead of a fresh Notion round-trip, so switching between companies is instant.
+    const cached = realCompaniesCache?.find(c => c.id === id)
+    if (cached) return cached
     const res = await fetch(`/api/companies/${id}`)
     if (!res.ok) throw new Error('Failed to fetch company from Notion')
     return res.json()

@@ -1,6 +1,6 @@
 import { useState } from 'react'
 import { X, Link2 } from 'lucide-react'
-import { Company, KnockoutStatus, AXIS_LABELS, updateCompany, isRealCompanyId } from '../api'
+import { Company, KnockoutStatus, AXIS_LABELS, updateCompany, updateRealCompany, isRealCompanyId } from '../api'
 import { useToast } from '../context/ToastContext'
 import { useTaxonomy } from '../context/TaxonomyContext'
 import { isValidDomain, isValidUrl } from '../utils/validation'
@@ -98,12 +98,7 @@ export default function EditCompanyModal({ company, onClose, onSaved }: Props) {
     e.preventDefault()
     setTouched(true)
     if (nameError || domainError || linkedinError) return
-    if (isRealCompanyId(company.id)) {
-      showToast('info', 'Not connected yet', 'Editing Notion-backed companies isn\'t wired up yet — changes here would only apply to demo data.')
-      return
-    }
-    setSaving(true)
-    await updateCompany(company.id, {
+    const update = {
       name, description, domain,
       linkedin_url: linkedin.trim() || null,
       location, origin_source: originSource,
@@ -114,7 +109,23 @@ export default function EditCompanyModal({ company, onClose, onSaved }: Props) {
       construction_stage: stages,
       product_type: productTypes,
       technology_type: techTypes,
-    })
+    }
+    setSaving(true)
+    if (isRealCompanyId(company.id)) {
+      try {
+        await updateRealCompany(company.id, update)
+        showToast('success', 'Changes saved', 'Company record has been updated successfully.')
+        onSaved()
+      } catch (err) {
+        console.error('Failed to save changes to Notion:', err)
+        showToast('error', 'Save failed', 'Could not save changes to Notion.')
+      } finally {
+        setSaving(false)
+      }
+      return
+    }
+    await updateCompany(company.id, update)
+    setSaving(false)
     showToast('success', 'Changes saved', 'Company record has been updated successfully.')
     onSaved()
   }
@@ -178,14 +189,14 @@ export default function EditCompanyModal({ company, onClose, onSaved }: Props) {
           <Field label="Allie Knockout Pass/Fail">
             <select value={allie ?? ''} onChange={e => setAllie((e.target.value || null) as KnockoutStatus)} className={selectCls} style={selectArrowStyle}>
               <option value="">Select…</option>
-              {allieKnockoutStates.map(o => <option key={o} value={o}>{o}</option>)}
+              {(allieKnockoutStates ?? []).map(o => <option key={o} value={o}>{o}</option>)}
             </select>
           </Field>
 
           <Field label="Andra Knockout Pass/Fail">
             <select value={andra ?? ''} onChange={e => setAndra((e.target.value || null) as KnockoutStatus)} className={selectCls} style={selectArrowStyle}>
               <option value="">Select…</option>
-              {andraKnockoutStates.map(o => <option key={o} value={o}>{o}</option>)}
+              {(andraKnockoutStates ?? []).map(o => <option key={o} value={o}>{o}</option>)}
             </select>
           </Field>
 

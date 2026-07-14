@@ -65,6 +65,15 @@ export function toMultiSelect(values) {
 export function toSelect(value) {
   return { select: value ? { name: value } : null }
 }
+export function toTitle(value) {
+  return { title: value ? [{ text: { content: value } }] : [] }
+}
+export function toRichText(value) {
+  return { rich_text: value ? [{ text: { content: value } }] : [] }
+}
+export function toUrl(value) {
+  return { url: value || null }
+}
 
 export async function fetchAllPages(databaseId) {
   const results = []

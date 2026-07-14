@@ -2,7 +2,8 @@ import express from 'express'
 import cors from 'cors'
 import {
   notionFetch, fetchAllPages, NOTION_COMPANIES_DB_ID,
-  readTitle, readText, readMultiSelect, readSelect, readUrl, readOptions, toMultiSelect, toSelect,
+  readTitle, readText, readMultiSelect, readSelect, readUrl, readOptions,
+  toMultiSelect, toSelect, toTitle, toRichText, toUrl,
 } from './notion.js'
 
 const app = express()
@@ -145,19 +146,33 @@ app.get('/api/companies/:id', async (req, res) => {
   }
 })
 
-// Approve Tags: marks a company human-reviewed and persists its (possibly human-corrected)
-// classification axes. Deliberately narrow — only touches Tagged By + the 5 axis multi-selects,
-// never name/description/domain/location/knockout fields (that's Edit Company's job).
+// Maps editable app fields to their Notion property writers. Only keys present in the
+// request body get touched — Approve Tags sends just the 5 axes, Edit Save sends everything.
+const FIELD_WRITERS = {
+  name: v => ({ 'Name': toTitle(v) }),
+  description: v => ({ 'Description': toRichText(v) }),
+  domain: v => ({ 'Domain': toUrl(v ? (/^https?:\/\//.test(v) ? v : `https://${v}`) : null) }),
+  linkedin_url: v => ({ 'LinkedIn URL': toUrl(v) }),
+  location: v => ({ 'Location': toRichText(v) }),
+  origin_source: v => ({ 'Origin Source': toUrl(v) }),
+  origin_category: v => ({ 'Origin Category (HVC)': toMultiSelect(v ? [v] : []) }),
+  allie_knockout: v => ({ 'Allie Knockout Pass/Fail': toSelect(v) }),
+  andra_knockout: v => ({ 'Andra Knockout Pass/Fail': toSelect(v) }),
+  region: v => ({ 'Region (HTV)': toMultiSelect(v) }),
+  industry: v => ({ 'Industry (HVC)': toMultiSelect(v) }),
+  construction_stage: v => ({ 'Construction Stage (HVC)': toMultiSelect(v) }),
+  product_type: v => ({ 'Product Type (HVC)': toMultiSelect(v) }),
+  technology_type: v => ({ 'Technology Type (HVC)': toMultiSelect(v) }),
+}
+
+// Used by both Approve Tags (axes only) and Edit Save (full record) — both are human-initiated
+// writes, so this always marks the company Tagged By → Human, matching the Edit modal's own copy.
 app.patch('/api/companies/:id', async (req, res) => {
   try {
-    const { industry, construction_stage, product_type, technology_type, region } = req.body
-    const properties = {
-      'Tagged By': toSelect('Human'),
-      'Industry (HVC)': toMultiSelect(industry),
-      'Construction Stage (HVC)': toMultiSelect(construction_stage),
-      'Product Type (HVC)': toMultiSelect(product_type),
-      'Technology Type (HVC)': toMultiSelect(technology_type),
-      'Region (HTV)': toMultiSelect(region),
+    let properties = { 'Tagged By': toSelect('Human') }
+    for (const [key, value] of Object.entries(req.body || {})) {
+      const writer = FIELD_WRITERS[key]
+      if (writer) properties = { ...properties, ...writer(value) }
     }
     const updatedPage = await notionFetch(`/pages/${req.params.id}`, {
       method: 'PATCH',
@@ -170,6 +185,24 @@ app.patch('/api/companies/:id', async (req, res) => {
       if (idx !== -1) companiesCache.companies[idx] = mapped
     }
     res.json(mapped)
+  } catch (err) {
+    console.error(err)
+    res.status(err.status || 500).json({ error: err.message })
+  }
+})
+
+// "Delete" = Notion archive, the same soft-delete Notion's own UI trash uses. Reversible from
+// within Notion (not from this app) — never a hard, unrecoverable destroy.
+app.delete('/api/companies/:id', async (req, res) => {
+  try {
+    await notionFetch(`/pages/${req.params.id}`, {
+      method: 'PATCH',
+      body: JSON.stringify({ archived: true }),
+    })
+    if (companiesCache) {
+      companiesCache.companies = companiesCache.companies.filter(c => c.id !== req.params.id)
+    }
+    res.json({ success: true })
   } catch (err) {
     console.error(err)
     res.status(err.status || 500).json({ error: err.message })

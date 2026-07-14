@@ -1,6 +1,6 @@
 import { useState, ReactNode } from 'react'
 import { X, MoreVertical, Pencil, Trash2, ExternalLink, Bot, UserRound, HelpCircle, CheckCircle2, AlertTriangle, XCircle, PlusCircle, Sparkles, Send, Bell, CalendarClock } from 'lucide-react'
-import { Company, ActivityType, ScoreBand, computeScore, deleteCompany, addNote, deleteNote, isRealCompanyId } from '../api'
+import { Company, ActivityType, ScoreBand, computeScore, deleteCompany, deleteRealCompany, addNote, deleteNote, isRealCompanyId } from '../api'
 import EditCompanyModal from './EditCompanyModal'
 import ConfirmDeleteModal from './ConfirmDeleteModal'
 import { useToast } from '../context/ToastContext'
@@ -132,17 +132,22 @@ export default function CompanyDetailPanel({ company, onClose, onDeleted, onUpda
   }
 
   async function handleConfirmDelete() {
-    if (isRealCompanyId(company.id)) {
-      setDeleting(false)
-      showToast('info', 'Not connected yet', 'Deleting Notion-backed companies isn\'t wired up yet.')
-      return
-    }
     setDeleteLoading(true)
-    await deleteCompany(company.id)
-    setDeleteLoading(false)
-    setDeleting(false)
-    showToast('success', 'Company deleted', 'The company has been removed from the database.')
-    onDeleted()
+    try {
+      if (isRealCompanyId(company.id)) {
+        await deleteRealCompany(company.id)
+      } else {
+        await deleteCompany(company.id)
+      }
+      showToast('success', 'Company deleted', 'The company has been removed from the database.')
+      onDeleted()
+    } catch (err) {
+      console.error('Failed to delete company:', err)
+      showToast('error', 'Delete failed', 'Could not delete the company in Notion.')
+    } finally {
+      setDeleteLoading(false)
+      setDeleting(false)
+    }
   }
 
   const active = company.tags.filter(t => t.is_accepted !== false)

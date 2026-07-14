@@ -1,12 +1,13 @@
 import { useEffect, useRef, useState } from 'react'
 import { useSearchParams } from 'react-router-dom'
 import { Search, X, Plus, Building2, SearchX, Loader2, ShieldCheck, ShieldAlert, ShieldX, Pencil, Trash2, RefreshCw } from 'lucide-react'
-import { fetchCompanies, fetchCompany, createCompany, deleteCompany, refreshCompanies, REFRESH_COOLDOWN_S, getCompaniesCachedAt, formatRelativeTime, isRealCompanyId, AXIS_LABELS, CompanyListItem, Company, Priority } from '../api'
+import { fetchCompanies, fetchCompany, createCompany, deleteCompany, deleteRealCompany, refreshCompanies, REFRESH_COOLDOWN_S, getCompaniesCachedAt, formatRelativeTime, isRealCompanyId, AXIS_LABELS, CompanyListItem, Company, Priority } from '../api'
 import { useChatContext } from '../context/ChatContext'
 import { useToast } from '../context/ToastContext'
 import { useTaxonomy } from '../context/TaxonomyContext'
 
 import CompanyDetailPanel from '../components/CompanyDetailPanel'
+import EditCompanyModal from '../components/EditCompanyModal'
 import ConfirmDeleteModal from '../components/ConfirmDeleteModal'
 import FilterSidebar from '../components/FilterSidebar'
 import { isValidDomain } from '../utils/validation'
@@ -212,21 +213,32 @@ export default function Companies() {
 
   const [deleteTarget, setDeleteTarget] = useState<CompanyListItem | null>(null)
   const [deleteLoading, setDeleteLoading] = useState(false)
+  const [editTarget, setEditTarget] = useState<Company | null>(null)
+
+  async function openEdit(id: string) {
+    const full = await fetchCompany(id)
+    setEditTarget(full)
+  }
 
   async function confirmDelete() {
     if (!deleteTarget) return
-    if (isRealCompanyId(deleteTarget.id)) {
-      setDeleteTarget(null)
-      showToast('info', 'Not connected yet', 'Deleting Notion-backed companies isn\'t wired up yet.')
-      return
-    }
     setDeleteLoading(true)
-    await deleteCompany(deleteTarget.id)
-    setDeleteLoading(false)
-    showToast('success', 'Company deleted', 'The company has been removed from the database.')
-    if (selected?.id === deleteTarget.id) handleCloseCard()
-    setDeleteTarget(null)
-    load()
+    try {
+      if (isRealCompanyId(deleteTarget.id)) {
+        await deleteRealCompany(deleteTarget.id)
+      } else {
+        await deleteCompany(deleteTarget.id)
+      }
+      showToast('success', 'Company deleted', 'The company has been removed from the database.')
+      if (selected?.id === deleteTarget.id) handleCloseCard()
+      setDeleteTarget(null)
+      load()
+    } catch (err) {
+      console.error('Failed to delete company:', err)
+      showToast('error', 'Delete failed', 'Could not delete the company in Notion.')
+    } finally {
+      setDeleteLoading(false)
+    }
   }
 
   return (
@@ -374,7 +386,7 @@ export default function Companies() {
                     <div className="flex items-center gap-3 shrink-0">
                       <div className="hidden group-hover:flex items-center gap-1">
                         <button
-                          onClick={e => { e.stopPropagation(); selectCompany(item.id) }}
+                          onClick={e => { e.stopPropagation(); openEdit(item.id) }}
                           className="p-1.5 rounded-lg border border-ht-blue/10 text-ht-blue/50 hover:text-ht-blue hover:bg-ht-blue/5 transition-colors"
                         >
                           <Pencil className="w-3.5 h-3.5" />
@@ -418,6 +430,15 @@ export default function Companies() {
           onClose={handleCloseCard}
           onDeleted={() => { handleCloseCard(); load() }}
           onUpdated={refreshSelected}
+        />
+      )}
+
+      {/* edit modal, from the list row's pencil icon */}
+      {editTarget && (
+        <EditCompanyModal
+          company={editTarget}
+          onClose={() => setEditTarget(null)}
+          onSaved={() => { setEditTarget(null); load() }}
         />
       )}
 
