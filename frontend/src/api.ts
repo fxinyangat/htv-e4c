@@ -621,15 +621,25 @@ export function formatRelativeTime(timestamp: number): string {
   return diffHr === 1 ? '1 hour ago' : `${diffHr} hours ago`
 }
 
-export async function fetchCompany(id: string): Promise<Company> {
+export async function fetchCompany(id: string, force = false): Promise<Company> {
   if (isRealCompanyId(id)) {
     // The company list already pulled the full record into realCompaniesCache — reuse it
     // instead of a fresh Notion round-trip, so switching between companies is instant.
-    const cached = realCompaniesCache?.find(c => c.id === id)
-    if (cached) return cached
+    // `force` bypasses this — needed by the tagging-in-progress poll, which must see live
+    // Notion state, not a cached snapshot from before the agent finished tagging.
+    if (!force) {
+      const cached = realCompaniesCache?.find(c => c.id === id)
+      if (cached) return cached
+    }
     const res = await fetch(`/api/companies/${id}`)
     if (!res.ok) throw new Error('Failed to fetch company from Notion')
-    return res.json()
+    const fresh = await res.json() as Company
+    if (realCompaniesCache) {
+      const idx = realCompaniesCache.findIndex(c => c.id === id)
+      if (idx !== -1) realCompaniesCache[idx] = fresh
+      else realCompaniesCache.push(fresh)
+    }
+    return fresh
   }
   const company = store.find(c => c.id === id)
   if (!company) throw new Error('Company not found')
@@ -705,6 +715,30 @@ export async function fetchCompanies(params: {
   const page = params.page ?? 1
   const start = (page - 1) * pageSize
   return delay({ total: items.length, items: items.slice(start, start + pageSize) })
+}
+
+export interface NewCompany {
+  name: string
+  domain?: string
+  description?: string
+  origin_source?: string
+  origin_category?: string
+}
+
+// Add Company: creates a real page in the live Notion Companies database.
+export async function createRealCompany(data: NewCompany): Promise<Company> {
+  const res = await fetch('/api/companies', {
+    method: 'POST',
+    headers: { 'Content-Type': 'application/json' },
+    body: JSON.stringify(data),
+  })
+  if (!res.ok) {
+    const body = await res.json().catch(() => ({}))
+    throw new Error(body.error || 'Failed to create company in Notion')
+  }
+  const created = await res.json() as Company
+  if (realCompaniesCache) realCompaniesCache.unshift(created)
+  return created
 }
 
 export async function createCompany(data: {

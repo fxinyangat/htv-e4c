@@ -1,7 +1,7 @@
 import { useEffect, useRef, useState } from 'react'
 import { useSearchParams } from 'react-router-dom'
 import { Search, X, Plus, Building2, SearchX, Loader2, ShieldCheck, ShieldAlert, ShieldX, Pencil, Trash2, RefreshCw } from 'lucide-react'
-import { fetchCompanies, fetchCompany, createCompany, deleteCompany, deleteRealCompany, refreshCompanies, REFRESH_COOLDOWN_S, getCompaniesCachedAt, formatRelativeTime, isRealCompanyId, AXIS_LABELS, CompanyListItem, Company, Priority } from '../api'
+import { fetchCompanies, fetchCompany, createRealCompany, deleteCompany, deleteRealCompany, refreshCompanies, REFRESH_COOLDOWN_S, getCompaniesCachedAt, formatRelativeTime, isRealCompanyId, AXIS_LABELS, CompanyListItem, Company, Priority } from '../api'
 import { useChatContext } from '../context/ChatContext'
 import { useToast } from '../context/ToastContext'
 import { useTaxonomy } from '../context/TaxonomyContext'
@@ -10,7 +10,10 @@ import CompanyDetailPanel from '../components/CompanyDetailPanel'
 import EditCompanyModal from '../components/EditCompanyModal'
 import ConfirmDeleteModal from '../components/ConfirmDeleteModal'
 import FilterSidebar from '../components/FilterSidebar'
-import { isValidDomain } from '../utils/validation'
+import { isValidDomain, normalizeDomain } from '../utils/validation'
+
+const TAGGING_POLL_INTERVAL_MS = 60 * 1000 // 1 min
+const TAGGING_TIMEOUT_MS = 10 * 60 * 1000 // give up and mark untagged after 10 min with no tags
 
 const PRIORITY_BADGE: Record<Priority, { label: string; cls: string; icon: typeof ShieldCheck }> = {
   high: { label: 'High', cls: 'bg-emerald-50 text-emerald-700 ring-emerald-600/20', icon: ShieldCheck },
@@ -84,7 +87,7 @@ export default function Companies() {
   const [searchParams, setSearchParams] = useSearchParams()
   const { setContext } = useChatContext()
   const [showAdd, setShowAdd] = useState(false)
-  const [taggingIds, setTaggingIds] = useState<Set<string>>(new Set())
+  const [taggingIds, setTaggingIds] = useState<Map<string, number>>(new Map()) // id -> started-polling-at
   const [expandedCats, setExpandedCats] = useState<Record<string, boolean>>(
     Object.keys(taxonomy).reduce((acc, key) => ({ ...acc, [key]: false }), {})
   )
@@ -113,16 +116,18 @@ export default function Companies() {
     newParams.delete('id')
     setSearchParams(newParams, { replace: true })
   }
-  const loadRef = useRef<(p?: number) => Promise<void>>()
+  const loadRef = useRef<(p?: number, silent?: boolean) => Promise<void>>()
 
   const filterKey = JSON.stringify(filters)
 
-  async function load(p = page) {
-    setLoading(true)
+  // `silent` skips the loading spinner — used for background refreshes (e.g. the tagging
+  // poll noticing tags arrived) where swapping data in place beats flashing the whole list.
+  async function load(p = page, silent = false) {
+    if (!silent) setLoading(true)
     const data = await fetchCompanies({ page: p, pageSize: 20, search, status, sort, filters })
     setItems(data.items)
     setTotal(data.total)
-    setLoading(false)
+    if (!silent) setLoading(false)
   }
 
   loadRef.current = load
@@ -164,20 +169,26 @@ export default function Companies() {
   useEffect(() => {
     if (taggingIds.size === 0) return
     const interval = setInterval(async () => {
-      const done: string[] = []
-      await Promise.all([...taggingIds].map(async id => {
-        const company = await fetchCompany(id)
-        if (company.tags.length > 0) done.push(id)
+      const tagged: string[] = []
+      const timedOut: string[] = []
+      await Promise.all([...taggingIds].map(async ([id, startedAt]) => {
+        const company = await fetchCompany(id, true)
+        if (company.tags.length > 0) tagged.push(id)
+        else if (Date.now() - startedAt > TAGGING_TIMEOUT_MS) timedOut.push(id)
       }))
-      if (done.length > 0) {
+      if (tagged.length > 0 || timedOut.length > 0) {
         setTaggingIds(prev => {
-          const next = new Set(prev)
-          done.forEach(id => next.delete(id))
+          const next = new Map(prev)
+          tagged.forEach(id => next.delete(id))
+          timedOut.forEach(id => next.delete(id))
           return next
         })
-        loadRef.current?.()
+        if (timedOut.length > 0) {
+          showToast('info', 'Tagging timed out', 'No tags arrived after 10 minutes — marked as untagged for now.')
+        }
+        loadRef.current?.(undefined, true)
       }
-    }, 2500)
+    }, TAGGING_POLL_INTERVAL_MS)
     return () => clearInterval(interval)
   }, [taggingIds])
 
@@ -453,7 +464,7 @@ export default function Companies() {
       )}
 
       {/* add company modal */}
-      {showAdd && <AddCompanyModal onClose={() => setShowAdd(false)} onAdded={(id) => { setShowAdd(false); setTaggingIds(prev => new Set([...prev, id])); load() }} />}
+      {showAdd && <AddCompanyModal onClose={() => setShowAdd(false)} onAdded={(id) => { setShowAdd(false); setTaggingIds(prev => new Map(prev).set(id, Date.now())); load() }} />}
     </div>
   )
 }
@@ -475,7 +486,6 @@ function AddCompanyModal({ onClose, onAdded }: { onClose: () => void; onAdded: (
   const [description, setDescription] = useState('')
   const [originSource, setOriginSource] = useState('')
   const [originCategory, setOriginCategory] = useState('')
-  const [extId, setExtId] = useState('')
   const [loading, setLoading] = useState(false)
   const [error, setError] = useState('')
   const [touched, setTouched] = useState(false)
@@ -490,16 +500,15 @@ function AddCompanyModal({ onClose, onAdded }: { onClose: () => void; onAdded: (
     setLoading(true)
     setError('')
     try {
-      const result = await createCompany({
+      const created = await createRealCompany({
         name: name.trim(),
-        domain: domain.trim(),
+        domain: normalizeDomain(domain),
         description: description.trim() || undefined,
         origin_source: originSource.trim() || undefined,
         origin_category: originCategory || undefined,
-        external_id: extId.trim() || undefined,
       })
-      showToast('info', 'Added as demo data', 'Added to local demo data only — creating real Notion companies isn\'t wired up yet, so it won\'t appear in this list.')
-      onAdded(result.id)
+      showToast('success', 'Company added', 'The company has been created in Notion.')
+      onAdded(created.id)
     } catch (err: unknown) {
       const message = err instanceof Error ? err.message : 'Failed to add company'
       setError(message)
@@ -536,6 +545,7 @@ function AddCompanyModal({ onClose, onAdded }: { onClose: () => void; onAdded: (
               type="text"
               value={domain}
               onChange={e => setDomain(e.target.value)}
+              onBlur={() => setDomain(d => normalizeDomain(d))}
               placeholder="e.g. buildtech.ai"
               className={touched && domainError ? modalInputErrorCls : modalInputCls}
             />
@@ -575,16 +585,6 @@ function AddCompanyModal({ onClose, onAdded }: { onClose: () => void; onAdded: (
                 {originCategories.map(o => <option key={o} value={o}>{o}</option>)}
               </select>
             </div>
-          </div>
-          <div>
-            <label className="block text-sm font-semibold text-ht-blue/70 mb-1.5">Company ID <span className="text-ht-blue/40 font-normal">— optional</span></label>
-            <input
-              type="text"
-              value={extId}
-              onChange={e => setExtId(e.target.value)}
-              placeholder="e.g. HV-1001 (auto-generated if blank)"
-              className={modalInputCls}
-            />
           </div>
           {error && <p className="text-sm font-medium text-red-500">{error}</p>}
         </form>

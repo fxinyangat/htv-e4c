@@ -3,7 +3,7 @@ import { X, Link2 } from 'lucide-react'
 import { Company, KnockoutStatus, AXIS_LABELS, updateCompany, updateRealCompany, isRealCompanyId } from '../api'
 import { useToast } from '../context/ToastContext'
 import { useTaxonomy } from '../context/TaxonomyContext'
-import { isValidDomain, isValidUrl } from '../utils/validation'
+import { isValidDomain, isValidUrl, normalizeDomain } from '../utils/validation'
 
 function Field({ label, children }: { label: string; children: React.ReactNode }) {
   return (
@@ -99,7 +99,7 @@ export default function EditCompanyModal({ company, onClose, onSaved }: Props) {
     setTouched(true)
     if (nameError || domainError || linkedinError) return
     const update = {
-      name, description, domain,
+      name, description, domain: normalizeDomain(domain),
       linkedin_url: linkedin.trim() || null,
       location, origin_source: originSource,
       origin_category: originCategory || null,
@@ -153,7 +153,14 @@ export default function EditCompanyModal({ company, onClose, onSaved }: Props) {
           </Field>
 
           <Field label="Domain">
-            <input type="text" value={domain} onChange={e => setDomain(e.target.value)} placeholder="e.g. groforma.com" className={touched && domainError ? inputErrorCls : inputCls} />
+            <input
+              type="text"
+              value={domain}
+              onChange={e => setDomain(e.target.value)}
+              onBlur={() => setDomain(d => normalizeDomain(d))}
+              placeholder="e.g. groforma.com"
+              className={touched && domainError ? inputErrorCls : inputCls}
+            />
             {touched && domainError && <p className="text-xs text-red-500 mt-1.5">{domainError}</p>}
           </Field>
 

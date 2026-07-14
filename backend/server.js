@@ -136,6 +136,39 @@ app.get('/api/companies', async (req, res) => {
   }
 })
 
+// Add Company: creates a new page in the real Notion Companies database. Tagged By is left
+// unset (mapCompany defaults that to 'NA'/untagged), matching a fresh row the Dust agent
+// hasn't picked up yet.
+app.post('/api/companies', async (req, res) => {
+  try {
+    const { name, domain, description, origin_source, origin_category } = req.body
+    if (!name || !name.trim()) {
+      return res.status(400).json({ error: 'Company name is required' })
+    }
+    const properties = { 'Name': toTitle(name) }
+    if (domain) properties['Domain'] = toUrl(/^https?:\/\//.test(domain) ? domain : `https://${domain}`)
+    if (description) properties['Description'] = toRichText(description)
+    if (origin_source) properties['Origin Source'] = toUrl(origin_source)
+    if (origin_category) properties['Origin Category (HVC)'] = toMultiSelect([origin_category])
+
+    const createdPage = await notionFetch('/pages', {
+      method: 'POST',
+      body: JSON.stringify({
+        parent: { database_id: NOTION_COMPANIES_DB_ID },
+        properties,
+      }),
+    })
+    const mapped = mapCompany(createdPage)
+    if (companiesCache) {
+      companiesCache.companies.unshift(mapped)
+    }
+    res.json(mapped)
+  } catch (err) {
+    console.error(err)
+    res.status(err.status || 500).json({ error: err.message })
+  }
+})
+
 app.get('/api/companies/:id', async (req, res) => {
   try {
     const page = await notionFetch(`/pages/${req.params.id}`)
