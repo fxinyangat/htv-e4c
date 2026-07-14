@@ -58,6 +58,14 @@ export function readOptions(propDef) {
   return (propDef[type]?.options || []).map(o => o.name)
 }
 
+// --- property writers, for PATCH /pages/:id ---
+export function toMultiSelect(values) {
+  return { multi_select: (values || []).map(name => ({ name })) }
+}
+export function toSelect(value) {
+  return { select: value ? { name: value } : null }
+}
+
 export async function fetchAllPages(databaseId) {
   const results = []
   let cursor

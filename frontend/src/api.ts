@@ -481,9 +481,7 @@ export async function fetchQueue(params: {
   filters?: Record<string, string[]>
 } = {}): Promise<{ total: number; items: QueueListItem[] }> {
   const realCompanies = await fetchRealCompanies()
-  // Queue = anything the agent has touched or hasn't touched yet — excludes only human-reviewed.
-  const base = realCompanies.filter(c => c.tagged_by !== 'Human')
-  let items = base.map(toQueueItem)
+  let items = realCompanies.map(toQueueItem)
 
   if (params.search) {
     const q = params.search.toLowerCase()
@@ -496,6 +494,10 @@ export async function fetchQueue(params: {
 
   if (params.status === 'untagged') items = items.filter(i => i.tagged_by === 'NA')
   else if (params.status === 'pending') items = items.filter(i => i.tagged_by === 'AI Agent')
+  else if (params.status === 'reviewed') items = items.filter(i => i.tagged_by === 'Human')
+  // Default view ("All Companies") is the actual queue — anything the agent has touched or
+  // hasn't touched yet — and excludes only human-reviewed companies, which live under "Recently Reviewed".
+  else items = items.filter(i => i.tagged_by !== 'Human')
 
   if (params.filters) {
     for (const [axis, values] of Object.entries(params.filters)) {
@@ -560,6 +562,31 @@ export async function refreshCompanies(): Promise<Company[]> {
   realCompaniesCache = data.companies as Company[]
   companiesCachedAt = data.cached_at ?? Date.now()
   return realCompaniesCache
+}
+
+export interface AxisApproval {
+  industry: string[]
+  construction_stage: string[]
+  product_type: string[]
+  technology_type: string[]
+  region: string[]
+}
+
+// Approve Tags for a real Notion company: marks it human-reviewed and persists the (possibly
+// human-corrected) classification axes. Deliberately narrow — see backend PATCH /api/companies/:id.
+export async function approveCompanyTags(id: string, axes: AxisApproval): Promise<Company> {
+  const res = await fetch(`/api/companies/${id}`, {
+    method: 'PATCH',
+    headers: { 'Content-Type': 'application/json' },
+    body: JSON.stringify(axes),
+  })
+  if (!res.ok) throw new Error('Failed to approve tags in Notion')
+  const updated = await res.json() as Company
+  if (realCompaniesCache) {
+    const idx = realCompaniesCache.findIndex(c => c.id === id)
+    if (idx !== -1) realCompaniesCache[idx] = updated
+  }
+  return updated
 }
 
 // "5 mins ago" style relative time, for showing when the company list was last pulled from Notion.

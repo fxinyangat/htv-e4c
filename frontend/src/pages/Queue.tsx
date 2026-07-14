@@ -3,7 +3,7 @@ import {
   Search, X, PartyPopper, Loader2, ChevronDown, CheckCircle2, AlertTriangle, XCircle, Bot, UserRound, HelpCircle, RefreshCw,
 } from 'lucide-react'
 import {
-  fetchQueue, fetchCompany, updateCompany, refreshCompanies, REFRESH_COOLDOWN_S, getCompaniesCachedAt, formatRelativeTime, isRealCompanyId, QueueListItem, Company, ScoreBand, AXIS_LABELS,
+  fetchQueue, fetchCompany, updateCompany, approveCompanyTags, refreshCompanies, REFRESH_COOLDOWN_S, getCompaniesCachedAt, formatRelativeTime, isRealCompanyId, QueueListItem, Company, ScoreBand, AXIS_LABELS,
 } from '../api'
 import FilterSidebar from '../components/FilterSidebar'
 import { useToast } from '../context/ToastContext'
@@ -15,8 +15,12 @@ const SCORE_BADGE_META: Record<ScoreBand, { label: string; cls: string; icon: ty
   insufficient: { label: 'Insufficient Data', cls: 'bg-red-50 text-red-600 ring-red-600/20', icon: XCircle },
 }
 
-function scoreBadge(band: ScoreBand) {
-  const { label, cls, icon: Icon } = SCORE_BADGE_META[band]
+function scoreBadge(band: ScoreBand, taggedBy: string) {
+  // Once a human has approved, the score badge stops reflecting data-completeness
+  // and just confirms the review happened.
+  const { label, cls, icon: Icon } = taggedBy === 'Human'
+    ? { label: 'Reviewed', cls: 'bg-emerald-50 text-emerald-700 ring-emerald-600/20', icon: CheckCircle2 }
+    : SCORE_BADGE_META[band]
   return (
     <span className={`inline-flex items-center gap-1.5 px-2.5 py-1 rounded-full text-xs font-semibold ring-1 ring-inset ${cls}`}>
       <Icon className="w-3.5 h-3.5" /> {label}
@@ -233,11 +237,20 @@ function QueueRow({
 
   async function handleApprove() {
     if (!company || !state) return
+    setSaving(true)
     if (isRealCompanyId(company.id)) {
-      showToast('info', 'Not connected yet', 'Approving Notion-backed companies isn\'t wired up yet — this will write Tagged By → Human once connected.')
+      try {
+        await approveCompanyTags(company.id, state)
+        showToast('success', 'Tags approved', 'Classification has been saved as human-reviewed.')
+        onApproved()
+      } catch (err) {
+        console.error('Failed to approve tags in Notion:', err)
+        showToast('error', 'Approve failed', 'Could not save the review to Notion.')
+      } finally {
+        setSaving(false)
+      }
       return
     }
-    setSaving(true)
     await updateCompany(company.id, {
       name: company.name,
       description: company.description,
@@ -255,7 +268,7 @@ function QueueRow({
       technology_type: state.technology_type,
     }, 'Tags approved — marked human-reviewed', 'reviewed')
     setSaving(false)
-    showToast('success', 'Tags approved', `${company.name}'s classification has been saved as human-reviewed.`)
+    showToast('success', 'Tags approved', 'Classification has been saved as human-reviewed.')
     onApproved()
   }
 
@@ -272,7 +285,7 @@ function QueueRow({
         <div className="flex items-center gap-3 shrink-0">
           <div className="flex flex-col items-end gap-1.5">
             <div className="flex items-center gap-2.5">
-              {scoreBadge(item.band)}
+              {scoreBadge(item.band, item.tagged_by)}
               {taggedByIcon(item.tagged_by)}
             </div>
             <span className={`text-xs flex items-center gap-1.5 ${item.band === 'insufficient' ? 'text-red-500' : 'text-ht-blue/40'}`}>

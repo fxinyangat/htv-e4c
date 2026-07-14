@@ -118,7 +118,7 @@ export default function Companies() {
 
   async function load(p = page) {
     setLoading(true)
-    const data = await fetchCompanies({ page: p, pageSize: 10, search, status, sort, filters })
+    const data = await fetchCompanies({ page: p, pageSize: 20, search, status, sort, filters })
     setItems(data.items)
     setTotal(data.total)
     setLoading(false)
@@ -223,7 +223,7 @@ export default function Companies() {
     setDeleteLoading(true)
     await deleteCompany(deleteTarget.id)
     setDeleteLoading(false)
-    showToast('success', 'Company deleted', `${deleteTarget.name} has been removed from the database.`)
+    showToast('success', 'Company deleted', 'The company has been removed from the database.')
     if (selected?.id === deleteTarget.id) handleCloseCard()
     setDeleteTarget(null)
     load()
@@ -477,7 +477,7 @@ function AddCompanyModal({ onClose, onAdded }: { onClose: () => void; onAdded: (
         origin_category: originCategory || undefined,
         external_id: extId.trim() || undefined,
       })
-      showToast('info', 'Added as demo data', `${name.trim()} was added to local demo data only — creating real Notion companies isn't wired up yet, so it won't appear in this list.`)
+      showToast('info', 'Added as demo data', 'Added to local demo data only — creating real Notion companies isn\'t wired up yet, so it won\'t appear in this list.')
       onAdded(result.id)
     } catch (err: unknown) {
       const message = err instanceof Error ? err.message : 'Failed to add company'

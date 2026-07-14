@@ -141,7 +141,7 @@ export default function CompanyDetailPanel({ company, onClose, onDeleted, onUpda
     await deleteCompany(company.id)
     setDeleteLoading(false)
     setDeleting(false)
-    showToast('success', 'Company deleted', `${company.name} has been removed from the database.`)
+    showToast('success', 'Company deleted', 'The company has been removed from the database.')
     onDeleted()
   }
 
@@ -149,7 +149,10 @@ export default function CompanyDetailPanel({ company, onClose, onDeleted, onUpda
   const valuesFor = (axis: string) => active.filter(t => t.axis === axis).map(t => t.value)
   const tb = taggedByMeta(company.tagged_by)
   const { score, band } = computeScore(company)
-  const conf = SCORE_BADGE_META[band]
+  // Once a human has approved, the badge stops reflecting data-completeness and just confirms the review.
+  const conf = company.tagged_by === 'Human'
+    ? { label: 'Reviewed', cls: 'bg-emerald-50 text-emerald-700 ring-emerald-600/20', icon: CheckCircle2 }
+    : SCORE_BADGE_META[band]
 
   return (
     <div className="fixed top-24 right-6 bottom-6 w-full max-w-xl bg-white rounded-3xl shadow-2xl border border-white z-40 flex flex-col overflow-hidden">

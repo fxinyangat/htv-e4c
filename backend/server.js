@@ -2,7 +2,7 @@ import express from 'express'
 import cors from 'cors'
 import {
   notionFetch, fetchAllPages, NOTION_COMPANIES_DB_ID,
-  readTitle, readText, readMultiSelect, readSelect, readUrl, readOptions,
+  readTitle, readText, readMultiSelect, readSelect, readUrl, readOptions, toMultiSelect, toSelect,
 } from './notion.js'
 
 const app = express()
@@ -139,6 +139,37 @@ app.get('/api/companies/:id', async (req, res) => {
   try {
     const page = await notionFetch(`/pages/${req.params.id}`)
     res.json(mapCompany(page))
+  } catch (err) {
+    console.error(err)
+    res.status(err.status || 500).json({ error: err.message })
+  }
+})
+
+// Approve Tags: marks a company human-reviewed and persists its (possibly human-corrected)
+// classification axes. Deliberately narrow — only touches Tagged By + the 5 axis multi-selects,
+// never name/description/domain/location/knockout fields (that's Edit Company's job).
+app.patch('/api/companies/:id', async (req, res) => {
+  try {
+    const { industry, construction_stage, product_type, technology_type, region } = req.body
+    const properties = {
+      'Tagged By': toSelect('Human'),
+      'Industry (HVC)': toMultiSelect(industry),
+      'Construction Stage (HVC)': toMultiSelect(construction_stage),
+      'Product Type (HVC)': toMultiSelect(product_type),
+      'Technology Type (HVC)': toMultiSelect(technology_type),
+      'Region (HTV)': toMultiSelect(region),
+    }
+    const updatedPage = await notionFetch(`/pages/${req.params.id}`, {
+      method: 'PATCH',
+      body: JSON.stringify({ properties }),
+    })
+    const mapped = mapCompany(updatedPage)
+    // Keep the warm cache consistent with the write instead of waiting on the next TTL refresh.
+    if (companiesCache) {
+      const idx = companiesCache.companies.findIndex(c => c.id === mapped.id)
+      if (idx !== -1) companiesCache.companies[idx] = mapped
+    }
+    res.json(mapped)
   } catch (err) {
     console.error(err)
     res.status(err.status || 500).json({ error: err.message })
