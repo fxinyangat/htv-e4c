@@ -212,7 +212,7 @@ app.patch('/api/companies/:id', async (req, res) => {
       body: JSON.stringify({ properties }),
     })
     const mapped = mapCompany(updatedPage)
-    // Keep the warm cache consistent with the write instead of waiting on the next TTL refresh.
+    // this keeps the warm cache consistent with the write instead of waiting on the next TTL refresh.
     if (companiesCache) {
       const idx = companiesCache.companies.findIndex(c => c.id === mapped.id)
       if (idx !== -1) companiesCache.companies[idx] = mapped
