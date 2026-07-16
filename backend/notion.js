@@ -6,11 +6,14 @@ const __dirname = path.dirname(fileURLToPath(import.meta.url))
 dotenv.config({ path: path.join(__dirname, '../.env.local') })
 
 const NOTION_API_KEY = process.env.NOTION_API_KEY
-export const NOTION_COMPANIES_DB_ID = '34429b38-2ad2-81c8-af21-cb2e927c1ded'
+export const NOTION_COMPANIES_DB_ID = process.env.NOTION_DATABASE_ID
 const NOTION_VERSION = '2022-06-28'
 
 if (!NOTION_API_KEY) {
-  console.warn('WARNING: NOTION_API_KEY is not set in .env.local')
+  console.warn('WARNING: NOTION_API_KEY is not set')
+}
+if (!NOTION_COMPANIES_DB_ID) {
+  console.warn('WARNING: NOTION_DATABASE_ID is not set')
 }
 
 export async function notionFetch(pathSuffix, options = {}) {
@@ -50,7 +53,7 @@ export function readUrl(prop) {
   return prop?.url || null
 }
 
-// Reads the configured dropdown options off a select/multi_select property definition
+// Read the configured dropdown options off a select/multi_select property definition
 // (as returned by GET /databases/:id), not off a page's property value.
 export function readOptions(propDef) {
   if (!propDef) return []
@@ -75,6 +78,7 @@ export function toUrl(value) {
   return { url: value || null }
 }
 
+// Pages through a database query 100 rows at a time until Notion reports no more pages left.
 export async function fetchAllPages(databaseId) {
   const results = []
   let cursor

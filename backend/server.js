@@ -36,6 +36,7 @@ function parseTaggingComment(raw) {
 
 let nextTagId = 1
 
+// Flatten a raw Notion page fitting thw frontend type expects.
 function mapCompany(page) {
   const p = page.properties
 
