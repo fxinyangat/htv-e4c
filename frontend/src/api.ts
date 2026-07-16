@@ -418,7 +418,6 @@ function toListItem(c: Company): CompanyListItem {
   }
   const bestSource = active.some(t => t.source === 'human' && t.is_accepted === true) ? 'Human'
     : active.some(t => t.source === 'llm') ? 'LLM'
-    : active.some(t => t.source === 'knn_classifier') ? 'KNN'
     : '—'
   const valuesFor = (axis: string) => {
     const vals = active.filter(t => t.axis === axis).map(t => t.value)
