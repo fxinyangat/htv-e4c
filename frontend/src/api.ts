@@ -765,12 +765,22 @@ export interface ChatSource {
   name: string
 }
 
+// conversationId threads follow-up messages into the same Dust conversation so the agent has
+// real memory of the exchange — pass null for the first message, then the conversationId this
+// returns for every message after that.
 export async function sendChatMessage(
-  _messages: { role: string; content: string }[],
-  _contextCompanyId: string | null
-): Promise<{ response: string; sources: ChatSource[] }> {
-  return delay({
-    response: "I'm not wired up to a backend yet — this is placeholder text so the chat UI can be demoed without a live server.",
-    sources: [],
-  }, 500)
+  message: string,
+  conversationId: string | null
+): Promise<{ response: string; conversationId: string; sources: ChatSource[] }> {
+  const res = await fetch('/api/chat', {
+    method: 'POST',
+    headers: { 'Content-Type': 'application/json' },
+    body: JSON.stringify({ message, conversationId }),
+  })
+  if (!res.ok) {
+    const body = await res.json().catch(() => ({}))
+    throw new Error(body.error || 'Failed to reach the AI agent')
+  }
+  const data = await res.json()
+  return { response: data.response, conversationId: data.conversationId, sources: [] }
 }

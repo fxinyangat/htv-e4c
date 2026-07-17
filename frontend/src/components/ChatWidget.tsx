@@ -18,15 +18,59 @@ interface Message {
   sources?: Source[];
 }
 
+// Dust emits its own citation directive syntax (":cite[shortId]") inline in agent replies —
+// our markdown renderer doesn't understand it, so it shows up as ugly literal text. The
+// citation format isn't consistent across every tool the agent might use in a given turn, so
+// rather than trying to fragilely resolve each one to a real company link, we just strip them.
+function stripCitations(content: string): string {
+  return content.replace(/:cite\[[^\]]*\]/g, '');
+}
+
+// Defense in depth: if the agent ever emits a real markdown link into Notion instead of (or
+// alongside) a :cite[] directive, degrade it to plain text rather than rendering a raw
+// notion.so URL — internal Notion links aren't something app users should be clicking into.
+function isNotionUrl(href?: string): boolean {
+  if (!href) return false;
+  try {
+    return new URL(href).hostname.endsWith('notion.so');
+  } catch {
+    return false;
+  }
+}
+
+// Device-local only — survives a refresh but doesn't follow the user across browsers/devices.
+// Real cross-device history needs server-side storage tied to a logged-in user, once auth exists.
+const CHAT_STORAGE_KEY = 'htv_chat_history_v1';
+
+function loadStoredChat(): { messages: Message[]; conversationId: string | null } {
+  try {
+    const raw = localStorage.getItem(CHAT_STORAGE_KEY);
+    if (!raw) return { messages: [], conversationId: null };
+    const parsed = JSON.parse(raw);
+    return { messages: parsed.messages ?? [], conversationId: parsed.conversationId ?? null };
+  } catch {
+    return { messages: [], conversationId: null };
+  }
+}
+
 export default function ChatWidget() {
-  const [messages, setMessages] = useState<Message[]>([]);
+  const [messages, setMessages] = useState<Message[]>(() => loadStoredChat().messages);
   const [input, setInput] = useState('');
   const [isLoading, setIsLoading] = useState(false);
   const [width, setWidth] = useState(500);
+  const [conversationId, setConversationId] = useState<string | null>(() => loadStoredChat().conversationId);
   const messagesEndRef = useRef<HTMLDivElement>(null);
   const isResizing = useRef(false);
 
-  const { activeCompanyId, activeCompanyName, isOpen, setIsOpen } = useChatContext();
+  useEffect(() => {
+    try {
+      localStorage.setItem(CHAT_STORAGE_KEY, JSON.stringify({ messages, conversationId }));
+    } catch {
+      // localStorage unavailable (private browsing, quota, etc.) — fine to skip persisting
+    }
+  }, [messages, conversationId]);
+
+  const { activeCompanyName, isOpen, setIsOpen } = useChatContext();
   const navigate = useNavigate();
 
   const handleSourceClick = (source: Source) => {
@@ -82,7 +126,8 @@ export default function ChatWidget() {
     setIsLoading(true);
 
     try {
-      const data = await sendChatMessage([...messages, userMsg], activeCompanyId);
+      const data = await sendChatMessage(userMsg.content, conversationId);
+      setConversationId(data.conversationId);
       setMessages(prev => [...prev, { role: 'assistant', content: data.response, sources: data.sources }]);
     } catch (error) {
       console.error("Failed to send message:", error);
@@ -162,7 +207,16 @@ export default function ChatWidget() {
                 msg.content
               ) : (
                 <div className="flex flex-col gap-2">
-                  <ReactMarkdown remarkPlugins={[remarkGfm]}>{msg.content}</ReactMarkdown>
+                  <ReactMarkdown
+                    remarkPlugins={[remarkGfm]}
+                    components={{
+                      a: ({ href, children }) => isNotionUrl(href)
+                        ? <>{children}</>
+                        : <a href={href} target="_blank" rel="noreferrer" className="text-ht-orange hover:underline">{children}</a>,
+                    }}
+                  >
+                    {stripCitations(msg.content)}
+                  </ReactMarkdown>
                   
                   {msg.sources && msg.sources.length > 0 && (
                     <details className="mt-2 pt-2 border-t border-ht-blue/10 group">

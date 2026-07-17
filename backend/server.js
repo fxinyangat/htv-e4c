@@ -5,10 +5,28 @@ import {
   readTitle, readText, readMultiSelect, readSelect, readUrl, readOptions,
   toMultiSelect, toSelect, toTitle, toRichText, toUrl,
 } from './notion.js'
+import { askAgent } from './dust.js'
 
 const app = express()
 app.use(cors())
 app.use(express.json())
+
+// Ask AI chat widget — proxies to the Dust agent already configured for this workspace.
+// conversationId threads follow-up messages into the same Dust conversation (so the agent
+// has real memory of the exchange) instead of resending the whole history on every turn.
+app.post('/api/chat', async (req, res) => {
+  try {
+    const { message, conversationId } = req.body
+    if (!message || !message.trim()) {
+      return res.status(400).json({ error: 'Message is required' })
+    }
+    const { response, conversationId: newConversationId } = await askAgent(message.trim(), conversationId || undefined)
+    res.json({ response, conversationId: newConversationId })
+  } catch (err) {
+    console.error(err)
+    res.status(err.status || 500).json({ error: err.message })
+  }
+})
 
 function stripDomain(url) {
   if (!url) return ''
