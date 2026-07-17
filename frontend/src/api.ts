@@ -42,6 +42,7 @@ export interface Company {
   description: string
   priority: Priority
   updated_at: string
+  created_at: string
   domain: string
   location: string
   region: string[]
@@ -57,13 +58,6 @@ export interface Company {
   notes: Note[]
   tagging_comment: TaggingCommentLine[]
   tagging_action: string | null
-}
-
-export interface Metrics {
-  total_ai_tags: number
-  override_rate: number
-  pending_review: number
-  confidence_by_source: { source: string; avg: number; min: number; max: number }[]
 }
 
 export interface CompanyListItem {
@@ -142,12 +136,71 @@ export async function fetchTaxonomy(): Promise<TaxonomyData> {
   return res.json()
 }
 
+export interface InboundBreakdown {
+  label: string
+  value: number
+}
+
+export interface InboundStats {
+  inboundTotal: number
+  femaleFounders: number
+  bipocFounders: number
+  constructionStage: InboundBreakdown[]
+  constructionStageExtra: InboundBreakdown[]
+  region: InboundBreakdown[]
+  source: InboundBreakdown[]
+  industry: InboundBreakdown[]
+  productType: InboundBreakdown[]
+  technologyType: InboundBreakdown[]
+  diversity: InboundBreakdown[]
+  cached_at: number
+}
+
+// `ranges` is one { from, to } date pair per selected quarter — the backend scopes companies
+// to the union of those ranges by created_at and buckets every axis dynamically server-side.
+export async function fetchInboundStats(ranges: { from: string; to: string }[]): Promise<InboundStats> {
+  const res = await fetch(`/api/stats/inbound?ranges=${encodeURIComponent(JSON.stringify(ranges))}`)
+  if (!res.ok) throw new Error('Failed to fetch inbound stats from Notion')
+  return res.json()
+}
+
+// Internal pipeline/tagging-health metrics for the Portfolio Metrics page — not portfolio
+// company performance (that's a separate, future addition to that same page).
+export interface PipelineStats {
+  total: number
+  taggedBy: Record<string, number>
+  scoreBands: { high: number; needs_review: number; insufficient: number }
+  avgScore: number
+  coverageRate: number
+  reviewedLast7Days: number
+  reviewedLast30Days: number
+  backlogOver30Days: number
+  backlogOver60Days: number
+  backlogOver90Days: number
+  cached_at: number
+}
+
+export async function fetchPipelineStats(): Promise<PipelineStats> {
+  const res = await fetch('/api/stats/pipeline')
+  if (!res.ok) throw new Error('Failed to fetch pipeline stats from Notion')
+  return res.json()
+}
+
 export const AXIS_LABELS: Record<string, string> = {
   industry: 'Industry',
   construction_stage: 'Construction Stage',
   product_type: 'Product Type',
   technology_type: 'Technology Type',
   region: 'Region',
+}
+
+// Tagged By is a review-workflow state, not a classification tag — kept separate from
+// AXIS_LABELS/taxonomy, but filterable through the same multi-select mechanism as the axes above.
+export const TAGGED_BY_OPTIONS = ['NA', 'AI Agent', 'Human']
+export const TAGGED_BY_LABELS: Record<string, string> = {
+  NA: 'Untagged',
+  'AI Agent': 'AI Tagged',
+  Human: 'Human Tagged',
 }
 
 // Values that mean "not really tagged" per axis — mirrors the agent's own Tagging Comment schema.
@@ -216,6 +269,7 @@ const store: Company[] = [
     description: 'Collaborative construction management platform connecting field and office teams in real time.',
     priority: 'high',
     updated_at: '2025-06-12',
+    created_at: '2025-06-01',
     domain: 'groforma.com',
     location: 'San Francisco, CA',
     region: ['West US'],
@@ -250,6 +304,7 @@ const store: Company[] = [
     description: 'AI-powered home management platform using IoT sensors to automate post-construction maintenance.',
     priority: 'review',
     updated_at: '2025-06-10',
+    created_at: '2025-06-08',
     domain: 'tarahome.io',
     location: 'Austin, TX',
     region: ['South US'],
@@ -284,6 +339,7 @@ const store: Company[] = [
     description: 'Financial services platform streamlining fee management and invoicing for property transactions.',
     priority: 'review',
     updated_at: '2025-06-09',
+    created_at: '2025-06-06',
     domain: 'feesback.com',
     location: 'New York, NY',
     region: ['East US'],
@@ -318,6 +374,7 @@ const store: Company[] = [
     description: 'AI-driven jobsite safety monitoring combining computer vision and wearable IoT devices.',
     priority: 'high',
     updated_at: '2025-06-07',
+    created_at: '2025-06-03',
     domain: 'buildsafe.ai',
     location: 'Chicago, IL',
     region: ['Midwest US'],
@@ -350,6 +407,7 @@ const store: Company[] = [
     description: 'Demolition and end-of-life services provider; flagged as out of scope for current portfolio thesis.',
     priority: 'low',
     updated_at: '2025-06-05',
+    created_at: '2025-06-04',
     domain: 'test007.com',
     location: 'Denver, CO',
     region: ['Mountain US'],
@@ -384,6 +442,7 @@ const store: Company[] = [
     description: 'New entrant in the modular construction space.',
     priority: 'review',
     updated_at: '2025-07-01',
+    created_at: '2025-07-01',
     domain: 'newbuildco.com',
     location: 'Not specified',
     region: ['Not specified'],
@@ -408,67 +467,25 @@ function delay<T>(value: T, ms = 350): Promise<T> {
   return new Promise(resolve => setTimeout(() => resolve(value), ms))
 }
 
-function toListItem(c: Company): CompanyListItem {
-  const active = c.tags.filter(t => t.is_accepted !== false)
-  const pending = active.filter(t => t.source !== 'human' && t.is_accepted === null)
-  const aiTags = c.tags.filter(t => t.source !== 'human')
-  const bySource = (axis: string) => {
-    const t = active.find(t => t.axis === axis)
-    return t?.source ?? null
-  }
-  const bestSource = active.some(t => t.source === 'human' && t.is_accepted === true) ? 'Human'
-    : active.some(t => t.source === 'llm') ? 'LLM'
-    : '—'
-  const valuesFor = (axis: string) => {
-    const vals = active.filter(t => t.axis === axis).map(t => t.value)
-    return vals.length ? vals.join('; ') : null
-  }
-  return {
-    id: c.id,
-    external_id: c.external_id,
-    name: c.name,
-    description: c.description,
-    priority: c.priority,
-    updated_at: c.updated_at,
-    min_confidence: aiTags.length ? Math.min(...aiTags.map(t => t.confidence)) : null,
-    has_pending: pending.length > 0,
-    tag_count: c.tags.length,
-    tagged_by: c.tagged_by,
-    region: c.region.length ? c.region.join('; ') : null,
-    construction_stage: valuesFor('construction_stage'),
-    technology_type: valuesFor('technology_type'),
-    product_type: valuesFor('product_type'),
-    industry: valuesFor('industry'),
-    tag_source: bestSource,
-    construction_stage_source: bySource('construction_stage'),
-    technology_type_source: bySource('technology_type'),
-    product_type_source: bySource('product_type'),
-    industry_source: bySource('industry'),
-  }
-}
-
-function toQueueItem(c: Company): QueueListItem {
-  const active = c.tags.filter(t => t.is_accepted !== false)
-  const valuesFor = (axis: string) => active.filter(t => t.axis === axis).map(t => t.value)
-  const { score, band } = computeScore(c)
-  return {
-    id: c.id,
-    external_id: c.external_id,
-    name: c.name,
-    description: c.description,
-    updated_at: c.updated_at,
-    tagged_by: c.tagged_by,
-    score,
-    band,
-    tagging_comment: c.tagging_comment,
-    tagging_action: c.tagging_action,
-    industry: valuesFor('industry'),
-    construction_stage: valuesFor('construction_stage'),
-    product_type: valuesFor('product_type'),
-    technology_type: valuesFor('technology_type'),
-    region: c.region,
-    tag_count: c.tags.length,
-  }
+// Builds the query string shared by /api/companies/list and /api/companies/queue —
+// search/status/sort/pagination are plain params, filters is JSON-encoded since it's a
+// Record<string, string[]> and query strings don't have a native way to express that.
+function buildListQuery(params: {
+  page?: number
+  pageSize?: number
+  search?: string
+  status?: string
+  sort?: string
+  filters?: Record<string, string[]>
+}): string {
+  const qs = new URLSearchParams()
+  if (params.page) qs.set('page', String(params.page))
+  if (params.pageSize) qs.set('pageSize', String(params.pageSize))
+  if (params.search) qs.set('search', params.search)
+  if (params.status) qs.set('status', params.status)
+  if (params.sort) qs.set('sort', params.sort)
+  if (params.filters && Object.keys(params.filters).length) qs.set('filters', JSON.stringify(params.filters))
+  return qs.toString()
 }
 
 export async function fetchQueue(params: {
@@ -479,47 +496,12 @@ export async function fetchQueue(params: {
   sort?: string
   filters?: Record<string, string[]>
 } = {}): Promise<{ total: number; items: QueueListItem[] }> {
-  const realCompanies = await fetchRealCompanies()
-  let items = realCompanies.map(toQueueItem)
-
-  if (params.search) {
-    const q = params.search.toLowerCase()
-    items = items.filter(i =>
-      i.name.toLowerCase().includes(q) ||
-      i.description.toLowerCase().includes(q) ||
-      i.external_id.toLowerCase().includes(q)
-    )
-  }
-
-  if (params.status === 'untagged') items = items.filter(i => i.tagged_by === 'NA')
-  else if (params.status === 'pending') items = items.filter(i => i.tagged_by === 'AI Agent')
-  else if (params.status === 'reviewed') items = items.filter(i => i.tagged_by === 'Human')
-  // Default view ("All Companies") is the actual queue — anything the agent has touched or
-  // hasn't touched yet — and excludes only human-reviewed companies, which live under "Recently Reviewed".
-  else items = items.filter(i => i.tagged_by !== 'Human')
-
-  if (params.filters) {
-    for (const [axis, values] of Object.entries(params.filters)) {
-      if (!values.length) continue
-      items = items.filter(i => {
-        const field = (i as unknown as Record<string, string | string[] | null>)[axis]
-        if (!field) return false
-        return Array.isArray(field) ? values.some(v => field.includes(v)) : values.includes(field)
-      })
-    }
-  }
-
-  const sort = params.sort ?? 'score_asc'
-  if (sort === 'name_asc') items.sort((a, b) => a.name.localeCompare(b.name))
-  else if (sort === 'name_desc') items.sort((a, b) => b.name.localeCompare(a.name))
-  else if (sort === 'score_asc') items.sort((a, b) => a.score - b.score)
-  else if (sort === 'score_desc') items.sort((a, b) => b.score - a.score)
-  else items.sort((a, b) => b.updated_at.localeCompare(a.updated_at))
-
-  const pageSize = params.pageSize ?? 20
-  const page = params.page ?? 1
-  const start = (page - 1) * pageSize
-  return delay({ total: items.length, items: items.slice(start, start + pageSize) })
+  const qs = buildListQuery(params)
+  const res = await fetch(`/api/companies/queue?${qs}`)
+  if (!res.ok) throw new Error('Failed to fetch queue from Notion')
+  const data = await res.json()
+  if (data.cached_at) companiesCachedAt = data.cached_at
+  return { total: data.total, items: data.items }
 }
 
 // Real Notion company IDs are UUIDs (contain dashes); mock/demo IDs are plain digits.
@@ -527,40 +509,29 @@ export function isRealCompanyId(id: string): boolean {
   return id.includes('-')
 }
 
-let realCompaniesCache: Company[] | null = null
+// Tracks when the company data was last pulled from Notion, for the "X ago" label —
+// updated by whichever list/queue/refresh call last touched the backend. The full company
+// list itself is never held client-side anymore — the backend keeps the warm cache and
+// serves search/filter/sort/pagination itself, so the browser only ever gets the current page.
 let companiesCachedAt: number | null = null
 
 export function getCompaniesCachedAt(): number | null {
   return companiesCachedAt
 }
 
-async function fetchRealCompanies(): Promise<Company[]> {
-  if (realCompaniesCache) return realCompaniesCache
-  const res = await fetch('/api/companies')
-  if (!res.ok) throw new Error('Failed to fetch companies from Notion')
-  const data = await res.json()
-  realCompaniesCache = data.companies as Company[]
-  companiesCachedAt = data.cached_at ?? Date.now()
-  return realCompaniesCache
-}
-
-export function invalidateCompaniesCache() {
-  realCompaniesCache = null
-}
-
 // Mirrors the backend's MIN_REFRESH_INTERVAL_MS — used to disable the Refresh button
 // client-side so the UI cooldown matches what the server will actually honor.
 export const REFRESH_COOLDOWN_S = 60
 
-// Forces a live re-fetch past both the frontend cache and the backend's 1h TTL,
-// for a manual "Refresh" action rather than waiting on the background cache cycle.
-export async function refreshCompanies(): Promise<Company[]> {
-  const res = await fetch('/api/companies?refresh=1')
+// Forces the backend past its 1h TTL to re-fetch from Notion (subject to its own cooldown).
+// Only triggers the refresh — the caller re-runs its own list/queue fetch right after to
+// pick up the result. Piggybacks on /api/companies/list with pageSize=1 so the refresh
+// side-effect happens without shipping the full company list just to read cached_at.
+export async function refreshCompanies(): Promise<void> {
+  const res = await fetch('/api/companies/list?refresh=1&pageSize=1')
   if (!res.ok) throw new Error('Failed to refresh companies from Notion')
   const data = await res.json()
-  realCompaniesCache = data.companies as Company[]
-  companiesCachedAt = data.cached_at ?? Date.now()
-  return realCompaniesCache
+  if (data.cached_at) companiesCachedAt = data.cached_at
 }
 
 export interface AxisApproval {
@@ -581,12 +552,7 @@ async function patchRealCompany(id: string, fields: AxisApproval | CompanyUpdate
     body: JSON.stringify(fields),
   })
   if (!res.ok) throw new Error('Failed to save changes to Notion')
-  const updated = await res.json() as Company
-  if (realCompaniesCache) {
-    const idx = realCompaniesCache.findIndex(c => c.id === id)
-    if (idx !== -1) realCompaniesCache[idx] = updated
-  }
-  return updated
+  return res.json() as Promise<Company>
 }
 
 // Approve Tags: marks a company human-reviewed and persists the (possibly human-corrected)
@@ -604,9 +570,6 @@ export async function updateRealCompany(id: string, update: CompanyUpdate): Prom
 export async function deleteRealCompany(id: string): Promise<void> {
   const res = await fetch(`/api/companies/${id}`, { method: 'DELETE' })
   if (!res.ok) throw new Error('Failed to delete company in Notion')
-  if (realCompaniesCache) {
-    realCompaniesCache = realCompaniesCache.filter(c => c.id !== id)
-  }
 }
 
 // "5 mins ago" style relative time, for showing when the company list was last pulled from Notion.
@@ -622,49 +585,17 @@ export function formatRelativeTime(timestamp: number): string {
 
 export async function fetchCompany(id: string, force = false): Promise<Company> {
   if (isRealCompanyId(id)) {
-    // The company list already pulled the full record into realCompaniesCache — reuse it
-    // instead of a fresh Notion round-trip, so switching between companies is instant.
-    // `force` bypasses this — needed by the tagging-in-progress poll, which must see live
-    // Notion state, not a cached snapshot from before the agent finished tagging.
-    if (!force) {
-      const cached = realCompaniesCache?.find(c => c.id === id)
-      if (cached) return cached
-    }
-    const res = await fetch(`/api/companies/${id}`)
+    // The backend keeps its own warm cache and serves single-company lookups from it, so
+    // this stays fast without the frontend holding the full list. `force` bypasses that
+    // cache — needed by the tagging-in-progress poll, which must see live Notion state,
+    // not a snapshot that could be up to an hour old.
+    const res = await fetch(`/api/companies/${id}${force ? '?fresh=1' : ''}`)
     if (!res.ok) throw new Error('Failed to fetch company from Notion')
-    const fresh = await res.json() as Company
-    if (realCompaniesCache) {
-      const idx = realCompaniesCache.findIndex(c => c.id === id)
-      if (idx !== -1) realCompaniesCache[idx] = fresh
-      else realCompaniesCache.push(fresh)
-    }
-    return fresh
+    return res.json()
   }
   const company = store.find(c => c.id === id)
   if (!company) throw new Error('Company not found')
   return delay({ ...company, tags: [...company.tags], activity: [...company.activity], notes: [...company.notes] })
-}
-
-export async function fetchMetrics(): Promise<Metrics> {
-  const aiTags = store.flatMap(c => c.tags.filter(t => t.source !== 'human'))
-  const overridden = aiTags.filter(t => t.is_accepted === false).length
-  const pending = aiTags.filter(t => t.is_accepted === null).length
-  const sources = [...new Set(aiTags.map(t => t.source))]
-  const confidence_by_source = sources.map(source => {
-    const confs = aiTags.filter(t => t.source === source).map(t => t.confidence)
-    return {
-      source,
-      avg: confs.reduce((a, b) => a + b, 0) / confs.length,
-      min: Math.min(...confs),
-      max: Math.max(...confs),
-    }
-  })
-  return delay({
-    total_ai_tags: aiTags.length,
-    override_rate: aiTags.length ? Math.round((overridden / aiTags.length) * 10000) / 10000 : 0,
-    pending_review: pending,
-    confidence_by_source,
-  })
 }
 
 export async function fetchCompanies(params: {
@@ -675,45 +606,12 @@ export async function fetchCompanies(params: {
   sort?: string
   filters?: Record<string, string[]>
 }): Promise<{ total: number; items: CompanyListItem[] }> {
-  const realCompanies = await fetchRealCompanies()
-  let items = realCompanies.map(toListItem)
-
-  if (params.search) {
-    const q = params.search.toLowerCase()
-    items = items.filter(i =>
-      i.name.toLowerCase().includes(q) ||
-      i.description.toLowerCase().includes(q) ||
-      i.external_id.toLowerCase().includes(q)
-    )
-  }
-
-  if (params.status === 'untagged') items = items.filter(i => i.tag_count === 0)
-  else if (params.status === 'pending') items = items.filter(i => i.has_pending)
-  else if (params.status === 'reviewed') items = items.filter(i => !i.has_pending && i.tag_count > 0)
-
-  if (params.filters) {
-    for (const [axis, values] of Object.entries(params.filters)) {
-      if (!values.length) continue
-      items = items.filter(i => {
-        const field = (i as unknown as Record<string, string | null>)[axis]
-        if (!field) return false
-        return values.some(v => field.split('; ').includes(v))
-      })
-    }
-  }
-
-  const sort = params.sort ?? 'updated_desc'
-  if (sort === 'name_asc') items.sort((a, b) => a.name.localeCompare(b.name))
-  else if (sort === 'name_desc') items.sort((a, b) => b.name.localeCompare(a.name))
-  else if (sort === 'confidence_asc') items.sort((a, b) => (a.min_confidence ?? 1) - (b.min_confidence ?? 1))
-  else if (sort === 'tags_desc') items.sort((a, b) => b.tag_count - a.tag_count)
-  else if (sort === 'tags_asc') items.sort((a, b) => a.tag_count - b.tag_count)
-  else items.sort((a, b) => b.updated_at.localeCompare(a.updated_at))
-
-  const pageSize = params.pageSize ?? 20
-  const page = params.page ?? 1
-  const start = (page - 1) * pageSize
-  return delay({ total: items.length, items: items.slice(start, start + pageSize) })
+  const qs = buildListQuery(params)
+  const res = await fetch(`/api/companies/list?${qs}`)
+  if (!res.ok) throw new Error('Failed to fetch companies from Notion')
+  const data = await res.json()
+  if (data.cached_at) companiesCachedAt = data.cached_at
+  return { total: data.total, items: data.items }
 }
 
 export interface NewCompany {
@@ -735,9 +633,7 @@ export async function createRealCompany(data: NewCompany): Promise<Company> {
     const body = await res.json().catch(() => ({}))
     throw new Error(body.error || 'Failed to create company in Notion')
   }
-  const created = await res.json() as Company
-  if (realCompaniesCache) realCompaniesCache.unshift(created)
-  return created
+  return res.json()
 }
 
 export async function createCompany(data: {
@@ -755,6 +651,7 @@ export async function createCompany(data: {
   const company: Company = {
     id, external_id, name: data.name, description: data.description ?? '',
     priority: 'review', updated_at: new Date().toISOString().slice(0, 10),
+    created_at: new Date().toISOString().slice(0, 10),
     domain: data.domain, location: 'Not specified', region: ['Not specified'],
     diversity_status: null, linkedin_url: null,
     origin_source: data.origin_source ?? '',

@@ -341,26 +341,27 @@ export default function Queue() {
   const [page, setPage] = useState(1)
   const [search, setSearch] = useState('')
   const [searchInput, setSearchInput] = useState('')
-  const [status, setStatus] = useState('all')
   const [sort, setSort] = useState('score_asc')
-  const [filters, setFilters] = useState<Record<string, string[]>>({})
+  // Defaults to Untagged + AI Tagged — the actual queue (anything awaiting review). Human-reviewed
+  // companies live under "Recently Reviewed" and are opt-in via the Tagged By filter.
+  const [filters, setFilters] = useState<Record<string, string[]>>({ tagged_by: ['NA', 'AI Agent'] })
   const [loading, setLoading] = useState(true)
   const [expandedId, setExpandedId] = useState<string | null>(null)
   const [expandedCats, setExpandedCats] = useState<Record<string, boolean>>(
-    Object.keys(taxonomy).reduce((acc, key) => ({ ...acc, [key]: false }), {})
+    Object.keys(taxonomy).reduce((acc, key) => ({ ...acc, [key]: false }), { tagged_by: false })
   )
 
   const filterKey = JSON.stringify(filters)
 
   async function load(p = page) {
     setLoading(true)
-    const data = await fetchQueue({ page: p, pageSize: 20, search, status, sort, filters })
+    const data = await fetchQueue({ page: p, pageSize: 20, search, sort, filters })
     setItems(data.items)
     setTotal(data.total)
     setLoading(false)
   }
 
-  useEffect(() => { load(1); setPage(1) }, [search, status, filterKey, sort])
+  useEffect(() => { load(1); setPage(1) }, [search, filterKey, sort])
   useEffect(() => { load() }, [page])
 
   const [refreshing, setRefreshing] = useState(false)
@@ -413,8 +414,6 @@ export default function Queue() {
   return (
     <div className="flex gap-6">
       <FilterSidebar
-        status={status}
-        setStatus={setStatus}
         filters={filters}
         toggleFilter={toggleFilter}
         expandedCats={expandedCats}

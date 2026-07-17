@@ -76,10 +76,12 @@ function mapCompany(page) {
     description: readText(p['Description']),
     priority: 'review',
     updated_at: (page.last_edited_time || '').slice(0, 10),
+    created_at: (page.created_time || '').slice(0, 10),
     domain: stripDomain(readUrl(p['Domain'])),
     location: readText(p['Location']),
     region,
     diversity_status: diversity[0] || null,
+    diversity_statuses: diversity, // full multi-select — needed for Inbound Stats combo buckets (e.g. "Female & BIPOC Founder")
     linkedin_url: readUrl(p['LinkedIn URL']),
     origin_source: readUrl(p['Origin Source']) || '',
     origin_category: originCategory[0] || null,
@@ -120,17 +122,350 @@ function loadCompanies() {
   return companiesLoadPromise
 }
 
+// Shared by every route that needs the company list — returns the warm cache unless it's
+// stale (TTL expired) or a caller explicitly asked to refresh (subject to its own cooldown).
+async function getFreshCompanies(wantsRefresh) {
+  const cacheAge = companiesCache ? Date.now() - companiesCachedAt : Infinity
+  const shouldFetch = !companiesCache || cacheAge >= COMPANIES_TTL_MS || (wantsRefresh && cacheAge >= MIN_REFRESH_INTERVAL_MS)
+  if (!shouldFetch) return companiesCache
+  return loadCompanies()
+}
+
 app.get('/api/companies', async (req, res) => {
   try {
-    const wantsRefresh = req.query.refresh === '1'
-    const cacheAge = companiesCache ? Date.now() - companiesCachedAt : Infinity
-    // A forced refresh only actually re-fetches if the cache is older than the cooldown —
-    // otherwise it's treated like a normal request and just serves the (recent) cache.
-    const shouldFetch = !companiesCache || cacheAge >= COMPANIES_TTL_MS || (wantsRefresh && cacheAge >= MIN_REFRESH_INTERVAL_MS)
-    if (!shouldFetch) {
-      return res.json(companiesCache)
+    res.json(await getFreshCompanies(req.query.refresh === '1'))
+  } catch (err) {
+    console.error(err)
+    res.status(err.status || 500).json({ error: err.message })
+  }
+})
+
+// --- list-shaping + scoring, ported from the frontend's api.ts (kept in sync manually) ---
+// so the Companies/Review Queue lists can be searched, filtered, sorted, and paginated here
+// instead of shipping the full ~10k-row list to every browser tab on every page load.
+
+const FILLER_VALUES = {
+  industry: ['NA', 'Out Of Scope'],
+  construction_stage: ['FILL IN', 'Other'],
+  product_type: ['Other'],
+  technology_type: ['Other'],
+  region: ['Unknown'],
+}
+const SCORE_AXES = ['industry', 'construction_stage', 'product_type', 'technology_type', 'region']
+
+function axisValues(company, axis) {
+  if (axis === 'region') return company.region
+  return company.tags.filter(t => t.axis === axis && t.is_accepted !== false).map(t => t.value)
+}
+function isAxisClean(company, axis) {
+  const values = axisValues(company, axis)
+  if (values.length === 0) return false
+  const filler = FILLER_VALUES[axis] ?? []
+  return !values.some(v => filler.includes(v))
+}
+function computeScore(company) {
+  let score = 0
+  const wordCount = company.description.trim().split(/\s+/).filter(Boolean).length
+  if (company.description.trim() && wordCount > 20) score += 40
+  if (company.location.trim()) score += 20
+  if (company.domain.trim()) score += 20
+  for (const axis of SCORE_AXES) {
+    if (isAxisClean(company, axis)) score += 4
+  }
+  const band = score >= 80 ? 'high' : score >= 50 ? 'needs_review' : 'insufficient'
+  return { score, band }
+}
+
+function toListItem(c) {
+  const active = c.tags.filter(t => t.is_accepted !== false)
+  const pending = active.filter(t => t.source !== 'human' && t.is_accepted === null)
+  const aiTags = c.tags.filter(t => t.source !== 'human')
+  const bySource = axis => active.find(t => t.axis === axis)?.source ?? null
+  const bestSource = active.some(t => t.source === 'human' && t.is_accepted === true) ? 'Human'
+    : active.some(t => t.source === 'llm') ? 'LLM'
+    : '—'
+  const valuesFor = axis => {
+    const vals = active.filter(t => t.axis === axis).map(t => t.value)
+    return vals.length ? vals.join('; ') : null
+  }
+  return {
+    id: c.id, external_id: c.external_id, name: c.name, description: c.description,
+    priority: c.priority, updated_at: c.updated_at,
+    min_confidence: aiTags.length ? Math.min(...aiTags.map(t => t.confidence)) : null,
+    has_pending: pending.length > 0,
+    tag_count: c.tags.length,
+    tagged_by: c.tagged_by,
+    region: c.region.length ? c.region.join('; ') : null,
+    construction_stage: valuesFor('construction_stage'),
+    technology_type: valuesFor('technology_type'),
+    product_type: valuesFor('product_type'),
+    industry: valuesFor('industry'),
+    tag_source: bestSource,
+    construction_stage_source: bySource('construction_stage'),
+    technology_type_source: bySource('technology_type'),
+    product_type_source: bySource('product_type'),
+    industry_source: bySource('industry'),
+  }
+}
+
+function toQueueItem(c) {
+  const active = c.tags.filter(t => t.is_accepted !== false)
+  const valuesFor = axis => active.filter(t => t.axis === axis).map(t => t.value)
+  const { score, band } = computeScore(c)
+  return {
+    id: c.id, external_id: c.external_id, name: c.name, description: c.description,
+    updated_at: c.updated_at, tagged_by: c.tagged_by, score, band,
+    tagging_comment: c.tagging_comment, tagging_action: c.tagging_action,
+    industry: valuesFor('industry'),
+    construction_stage: valuesFor('construction_stage'),
+    product_type: valuesFor('product_type'),
+    technology_type: valuesFor('technology_type'),
+    region: c.region,
+    tag_count: c.tags.length,
+  }
+}
+
+function applySearch(items, search) {
+  if (!search) return items
+  const q = String(search).toLowerCase()
+  return items.filter(i =>
+    i.name.toLowerCase().includes(q) ||
+    i.description.toLowerCase().includes(q) ||
+    i.external_id.toLowerCase().includes(q)
+  )
+}
+
+function parseFilters(raw) {
+  if (!raw) return {}
+  try {
+    return JSON.parse(raw)
+  } catch {
+    return {}
+  }
+}
+
+function paginate(items, page, pageSize) {
+  const size = Number(pageSize) || 20
+  const p = Number(page) || 1
+  const start = (p - 1) * size
+  return items.slice(start, start + size)
+}
+
+// Companies page list — search/status/filter/sort/paginate happens here, server-side,
+// against the already-warm cache, so the browser only ever receives the current page.
+app.get('/api/companies/list', async (req, res) => {
+  try {
+    const { companies, cached_at } = await getFreshCompanies(req.query.refresh === '1')
+    let items = companies.map(toListItem)
+    items = applySearch(items, req.query.search)
+
+    // Tagged By (Untagged/AI Tagged/Human Tagged) flows through this same generic filter
+    // mechanism as an axis named 'tagged_by' — no special-casing needed, since its field is
+    // a plain string just like the others below.
+    const filters = parseFilters(req.query.filters)
+    for (const [axis, values] of Object.entries(filters)) {
+      if (!values.length) continue
+      items = items.filter(i => {
+        const field = i[axis]
+        if (!field) return false
+        return values.some(v => field.split('; ').includes(v))
+      })
     }
-    res.json(await loadCompanies())
+
+    const sort = req.query.sort ?? 'updated_desc'
+    if (sort === 'name_asc') items.sort((a, b) => a.name.localeCompare(b.name))
+    else if (sort === 'name_desc') items.sort((a, b) => b.name.localeCompare(a.name))
+    else if (sort === 'confidence_asc') items.sort((a, b) => (a.min_confidence ?? 1) - (b.min_confidence ?? 1))
+    else if (sort === 'tags_desc') items.sort((a, b) => b.tag_count - a.tag_count)
+    else if (sort === 'tags_asc') items.sort((a, b) => a.tag_count - b.tag_count)
+    else items.sort((a, b) => b.updated_at.localeCompare(a.updated_at))
+
+    res.json({ total: items.length, items: paginate(items, req.query.page, req.query.pageSize), cached_at })
+  } catch (err) {
+    console.error(err)
+    res.status(err.status || 500).json({ error: err.message })
+  }
+})
+
+// Review Queue list — same idea as above, shaped/scored for the queue view instead.
+app.get('/api/companies/queue', async (req, res) => {
+  try {
+    const { companies, cached_at } = await getFreshCompanies(req.query.refresh === '1')
+    let items = companies.map(toQueueItem)
+    items = applySearch(items, req.query.search)
+
+    // Tagged By (Untagged/AI Tagged/Human Tagged) flows through this same generic filter
+    // mechanism as an axis named 'tagged_by' — the frontend defaults its selection to
+    // Untagged + AI Tagged (the actual queue), so there's no server-side default to apply here.
+    const filters = parseFilters(req.query.filters)
+    for (const [axis, values] of Object.entries(filters)) {
+      if (!values.length) continue
+      items = items.filter(i => {
+        const field = i[axis]
+        if (!field) return false
+        return Array.isArray(field) ? values.some(v => field.includes(v)) : values.includes(field)
+      })
+    }
+
+    const sort = req.query.sort ?? 'score_asc'
+    if (sort === 'name_asc') items.sort((a, b) => a.name.localeCompare(b.name))
+    else if (sort === 'name_desc') items.sort((a, b) => b.name.localeCompare(a.name))
+    else if (sort === 'score_asc') items.sort((a, b) => a.score - b.score)
+    else if (sort === 'score_desc') items.sort((a, b) => b.score - a.score)
+    else items.sort((a, b) => b.updated_at.localeCompare(a.updated_at))
+
+    res.json({ total: items.length, items: paginate(items, req.query.page, req.query.pageSize), cached_at })
+  } catch (err) {
+    console.error(err)
+    res.status(err.status || 500).json({ error: err.message })
+  }
+})
+
+// Exact-combination bucketing (mutually exclusive) — a company tagged both SaaS and Hardware
+// falls only into "SaaS + Hardware", never double-counted under standalone SaaS too.
+function tallyCombo(companies, getValues) {
+  const counts = new Map()
+  for (const c of companies) {
+    const values = getValues(c)
+    if (!values.length) continue
+    const label = [...values].sort().join(' + ')
+    counts.set(label, (counts.get(label) ?? 0) + 1)
+  }
+  return [...counts.entries()].map(([label, value]) => ({ label, value })).sort((a, b) => b.value - a.value)
+}
+
+// Overlap counting — a company with 3 product types is counted once under each, so this can
+// sum to more than the total. Matches how Product Type behaves in the source spreadsheet.
+function tallyOverlap(companies, getValues) {
+  const counts = new Map()
+  for (const c of companies) {
+    for (const v of getValues(c)) {
+      counts.set(v, (counts.get(v) ?? 0) + 1)
+    }
+  }
+  return [...counts.entries()].map(([label, value]) => ({ label, value })).sort((a, b) => b.value - a.value)
+}
+
+function tallySingle(companies, getValue) {
+  const counts = new Map()
+  for (const c of companies) {
+    const v = getValue(c)
+    if (!v) continue
+    counts.set(v, (counts.get(v) ?? 0) + 1)
+  }
+  return [...counts.entries()].map(([label, value]) => ({ label, value })).sort((a, b) => b.value - a.value)
+}
+
+const CONSTRUCTION_STAGES = ['Conception', 'Design&Engineering', 'Pre-Construction', 'Construction Execution', 'Post-Construction']
+
+// Quarterly deal-flow breakdown for the (external) Inbound Stats page. `ranges` is a JSON array
+// of { from, to } date strings (one per selected quarter) — companies are scoped to the union of
+// those ranges by created_at, then every axis is bucketed dynamically from whatever combinations
+// actually occur, rather than a hardcoded predefined taxonomy of buckets.
+app.get('/api/stats/inbound', async (req, res) => {
+  try {
+    let ranges = []
+    try {
+      ranges = JSON.parse(req.query.ranges || '[]')
+    } catch {
+      ranges = []
+    }
+
+    const { companies, cached_at } = await getFreshCompanies(req.query.refresh === '1')
+    const scoped = ranges.length
+      ? companies.filter(c => c.created_at && ranges.some(r => c.created_at >= r.from && c.created_at <= r.to))
+      : companies
+
+    const axisValues = (c, axis) => c.tags.filter(t => t.axis === axis).map(t => t.value)
+
+    // Construction Stage is special-cased, not a generic combo bucket: a company with the
+    // literal "Entire Value Chain" tag goes there; 2+ discrete stage tags go to "multi-stage";
+    // otherwise it lands in its one named stage.
+    const stageCounts = Object.fromEntries(CONSTRUCTION_STAGES.map(s => [s, 0]))
+    let entireValueChain = 0
+    let multiStage = 0
+    for (const c of scoped) {
+      const stages = axisValues(c, 'construction_stage')
+      if (stages.length === 1 && stages[0] === 'Entire Value Chain') entireValueChain++
+      else if (stages.length > 1) multiStage++
+      else if (stages.length === 1 && stageCounts[stages[0]] !== undefined) stageCounts[stages[0]]++
+    }
+
+    res.json({
+      inboundTotal: scoped.length,
+      femaleFounders: scoped.filter(c => (c.diversity_statuses || []).includes('Female Founder')).length,
+      bipocFounders: scoped.filter(c => (c.diversity_statuses || []).includes('BIPOC Founder')).length,
+      constructionStage: Object.entries(stageCounts).map(([label, value]) => ({ label, value })).sort((a, b) => b.value - a.value),
+      constructionStageExtra: [
+        { label: 'Entire Value Chain', value: entireValueChain },
+        { label: 'Focused on more than one stage', value: multiStage },
+      ],
+      region: tallyCombo(scoped, c => c.region),
+      source: tallySingle(scoped, c => c.origin_category),
+      industry: tallyCombo(scoped, c => axisValues(c, 'industry')),
+      productType: tallyOverlap(scoped, c => axisValues(c, 'product_type')),
+      technologyType: tallyCombo(scoped, c => axisValues(c, 'technology_type')),
+      diversity: tallyCombo(scoped, c => c.diversity_statuses || []),
+      cached_at,
+    })
+  } catch (err) {
+    console.error(err)
+    res.status(err.status || 500).json({ error: err.message })
+  }
+})
+
+// Internal pipeline/tagging-health metrics for the Portfolio Metrics page — not the same
+// thing as portfolio-company performance (that's Andra's future addition to that page).
+app.get('/api/stats/pipeline', async (req, res) => {
+  try {
+    const { companies, cached_at } = await getFreshCompanies(req.query.refresh === '1')
+    const total = companies.length
+    const DAY_MS = 24 * 60 * 60 * 1000
+    const now = Date.now()
+
+    const taggedBy = {}
+    const scoreBands = { high: 0, needs_review: 0, insufficient: 0 }
+    let scoreSum = 0
+    let reviewedLast7Days = 0
+    let reviewedLast30Days = 0
+    let backlogOver30Days = 0
+    let backlogOver60Days = 0
+    let backlogOver90Days = 0
+
+    for (const c of companies) {
+      taggedBy[c.tagged_by] = (taggedBy[c.tagged_by] ?? 0) + 1
+      const { score, band } = computeScore(c)
+      scoreBands[band]++
+      scoreSum += score
+
+      if (c.tagged_by === 'Human' && c.updated_at) {
+        const daysAgo = (now - new Date(c.updated_at).getTime()) / DAY_MS
+        if (daysAgo <= 7) reviewedLast7Days++
+        if (daysAgo <= 30) reviewedLast30Days++
+      }
+      if (c.tagged_by !== 'Human' && c.created_at) {
+        const ageDays = (now - new Date(c.created_at).getTime()) / DAY_MS
+        if (ageDays >= 30) backlogOver30Days++
+        if (ageDays >= 60) backlogOver60Days++
+        if (ageDays >= 90) backlogOver90Days++
+      }
+    }
+
+    const aiTouched = (taggedBy['AI Agent'] ?? 0) + (taggedBy['Human'] ?? 0)
+
+    res.json({
+      total,
+      taggedBy,
+      scoreBands,
+      avgScore: total ? Math.round((scoreSum / total) * 10) / 10 : 0,
+      coverageRate: total ? Math.round((aiTouched / total) * 10000) / 10000 : 0,
+      reviewedLast7Days,
+      reviewedLast30Days,
+      backlogOver30Days,
+      backlogOver60Days,
+      backlogOver90Days,
+      cached_at,
+    })
   } catch (err) {
     console.error(err)
     res.status(err.status || 500).json({ error: err.message })
@@ -172,8 +507,22 @@ app.post('/api/companies', async (req, res) => {
 
 app.get('/api/companies/:id', async (req, res) => {
   try {
+    // Served from the warm cache by default — fast, and avoids a live Notion round-trip
+    // for every click. ?fresh=1 bypasses it entirely (used by the tagging-in-progress poll,
+    // which needs to see live Notion state, not a snapshot that's up to an hour old).
+    const wantsFresh = req.query.fresh === '1'
+    if (!wantsFresh && companiesCache) {
+      const cached = companiesCache.companies.find(c => c.id === req.params.id)
+      if (cached) return res.json(cached)
+    }
     const page = await notionFetch(`/pages/${req.params.id}`)
-    res.json(mapCompany(page))
+    const mapped = mapCompany(page)
+    if (companiesCache) {
+      const idx = companiesCache.companies.findIndex(c => c.id === mapped.id)
+      if (idx !== -1) companiesCache.companies[idx] = mapped
+      else companiesCache.companies.unshift(mapped)
+    }
+    res.json(mapped)
   } catch (err) {
     console.error(err)
     res.status(err.status || 500).json({ error: err.message })

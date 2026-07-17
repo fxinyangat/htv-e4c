@@ -1,7 +1,7 @@
 import { useEffect, useRef, useState } from 'react'
 import { useSearchParams } from 'react-router-dom'
 import { Search, X, Plus, Building2, SearchX, Loader2, ShieldCheck, ShieldAlert, ShieldX, Pencil, Trash2, RefreshCw } from 'lucide-react'
-import { fetchCompanies, fetchCompany, createRealCompany, deleteCompany, deleteRealCompany, refreshCompanies, REFRESH_COOLDOWN_S, getCompaniesCachedAt, formatRelativeTime, isRealCompanyId, AXIS_LABELS, CompanyListItem, Company, Priority } from '../api'
+import { fetchCompanies, fetchCompany, createRealCompany, deleteCompany, deleteRealCompany, refreshCompanies, REFRESH_COOLDOWN_S, getCompaniesCachedAt, formatRelativeTime, isRealCompanyId, AXIS_LABELS, TAGGED_BY_LABELS, CompanyListItem, Company, Priority } from '../api'
 import { useChatContext } from '../context/ChatContext'
 import { useToast } from '../context/ToastContext'
 import { useTaxonomy } from '../context/TaxonomyContext'
@@ -12,8 +12,13 @@ import ConfirmDeleteModal from '../components/ConfirmDeleteModal'
 import FilterSidebar from '../components/FilterSidebar'
 import { isValidDomain, normalizeDomain } from '../utils/validation'
 
-const TAGGING_POLL_INTERVAL_MS = 60 * 1000 // 1 min
-const TAGGING_TIMEOUT_MS = 10 * 60 * 1000 // give up and mark untagged after 10 min with no tags
+// Stopgap until Notion webhooks + push replace this entirely (needs a real deployment first —
+// see project notes). Two-phase backoff so we don't hammer the API for an hour+ at 60s cadence:
+// check every 60s for the first 10 min, then every 5 min for up to 1 more hour, then give up.
+const TAGGING_TICK_MS = 60 * 1000 // heartbeat — the coarsest interval we ever check at
+const TAGGING_FAST_WINDOW_MS = 10 * 60 * 1000 // first 10 min: check every tick (60s)
+const TAGGING_SLOW_INTERVAL_MS = 5 * 60 * 1000 // after that: check every 5 min
+const TAGGING_TOTAL_TIMEOUT_MS = 70 * 60 * 1000 // give up entirely after 70 min total
 
 const PRIORITY_BADGE: Record<Priority, { label: string; cls: string; icon: typeof ShieldCheck }> = {
   high: { label: 'High', cls: 'bg-emerald-50 text-emerald-700 ring-emerald-600/20', icon: ShieldCheck },
@@ -32,6 +37,15 @@ function priorityBadge(priority: Priority) {
 
 function formatDate(iso: string) {
   return new Date(iso).toLocaleDateString('en-US', { month: 'short', day: 'numeric', year: 'numeric' })
+}
+
+function taggingChip(entry: { startedAt: number; lastCheckedAt: number }) {
+  const label = Date.now() - entry.startedAt >= TAGGING_FAST_WINDOW_MS ? 'Tagging is taking unusually long…' : 'Tagging…'
+  return (
+    <span className="px-2.5 py-1 text-xs font-medium rounded-full bg-ht-blue/5 text-ht-blue/50 animate-pulse ring-1 ring-inset ring-ht-blue/10 text-right">
+      {label}
+    </span>
+  )
 }
 
 const PRIMARY_AXES: [string, string][] = [
@@ -79,7 +93,6 @@ export default function Companies() {
   const [page, setPage] = useState(1)
   const [search, setSearch] = useState('')
   const [searchInput, setSearchInput] = useState('')
-  const [status, setStatus] = useState('all')
   const [sort, setSort] = useState('updated_desc')
   const [filters, setFilters] = useState<Record<string, string[]>>({})
   const [loading, setLoading] = useState(true)
@@ -87,9 +100,10 @@ export default function Companies() {
   const [searchParams, setSearchParams] = useSearchParams()
   const { setContext } = useChatContext()
   const [showAdd, setShowAdd] = useState(false)
-  const [taggingIds, setTaggingIds] = useState<Map<string, number>>(new Map()) // id -> started-polling-at
+  // id -> when polling started + when it was last actually checked (drives the two-phase backoff)
+  const [taggingIds, setTaggingIds] = useState<Map<string, { startedAt: number; lastCheckedAt: number }>>(new Map())
   const [expandedCats, setExpandedCats] = useState<Record<string, boolean>>(
-    Object.keys(taxonomy).reduce((acc, key) => ({ ...acc, [key]: false }), {})
+    Object.keys(taxonomy).reduce((acc, key) => ({ ...acc, [key]: false }), { tagged_by: false })
   )
 
   useEffect(() => {
@@ -124,7 +138,7 @@ export default function Companies() {
   // poll noticing tags arrived) where swapping data in place beats flashing the whole list.
   async function load(p = page, silent = false) {
     if (!silent) setLoading(true)
-    const data = await fetchCompanies({ page: p, pageSize: 20, search, status, sort, filters })
+    const data = await fetchCompanies({ page: p, pageSize: 20, search, sort, filters })
     setItems(data.items)
     setTotal(data.total)
     if (!silent) setLoading(false)
@@ -163,32 +177,53 @@ export default function Companies() {
     }
   }
 
-  useEffect(() => { load(1); setPage(1) }, [search, status, filterKey, sort])
+  useEffect(() => { load(1); setPage(1) }, [search, filterKey, sort])
   useEffect(() => { load() }, [page])
 
   useEffect(() => {
     if (taggingIds.size === 0) return
     const interval = setInterval(async () => {
-      const tagged: string[] = []
+      const now = Date.now()
+      const toCheck: string[] = []
       const timedOut: string[] = []
-      await Promise.all([...taggingIds].map(async ([id, startedAt]) => {
+
+      for (const [id, entry] of taggingIds) {
+        const elapsed = now - entry.startedAt
+        if (elapsed >= TAGGING_TOTAL_TIMEOUT_MS) {
+          timedOut.push(id)
+          continue
+        }
+        const phaseInterval = elapsed < TAGGING_FAST_WINDOW_MS ? TAGGING_TICK_MS : TAGGING_SLOW_INTERVAL_MS
+        if (now - entry.lastCheckedAt >= phaseInterval) toCheck.push(id)
+      }
+
+      if (toCheck.length === 0 && timedOut.length === 0) return
+
+      const tagged: string[] = []
+      const stillPending: string[] = []
+      await Promise.all(toCheck.map(async id => {
         const company = await fetchCompany(id, true)
         if (company.tags.length > 0) tagged.push(id)
-        else if (Date.now() - startedAt > TAGGING_TIMEOUT_MS) timedOut.push(id)
+        else stillPending.push(id)
       }))
-      if (tagged.length > 0 || timedOut.length > 0) {
-        setTaggingIds(prev => {
-          const next = new Map(prev)
-          tagged.forEach(id => next.delete(id))
-          timedOut.forEach(id => next.delete(id))
-          return next
+
+      setTaggingIds(prev => {
+        const next = new Map(prev)
+        tagged.forEach(id => next.delete(id))
+        timedOut.forEach(id => next.delete(id))
+        stillPending.forEach(id => {
+          const entry = next.get(id)
+          if (entry) next.set(id, { ...entry, lastCheckedAt: now })
         })
-        if (timedOut.length > 0) {
-          showToast('info', 'Tagging timed out', 'No tags arrived after 10 minutes — marked as untagged for now.')
-        }
+        return next
+      })
+      if (timedOut.length > 0) {
+        showToast('info', 'Tagging timed out', 'No tags arrived after 70 minutes — marked as untagged for now.')
+      }
+      if (tagged.length > 0 || timedOut.length > 0) {
         loadRef.current?.(undefined, true)
       }
-    }, TAGGING_POLL_INTERVAL_MS)
+    }, TAGGING_TICK_MS)
     return () => clearInterval(interval)
   }, [taggingIds])
 
@@ -255,8 +290,6 @@ export default function Companies() {
   return (
     <div className="flex gap-6">
       <FilterSidebar
-        status={status}
-        setStatus={setStatus}
         filters={filters}
         toggleFilter={toggleFilter}
         expandedCats={expandedCats}
@@ -327,7 +360,7 @@ export default function Companies() {
                   {Object.entries(filters).flatMap(([axis, tags]) =>
                     tags.map(tag => (
                       <span key={`${axis}:${tag}`} className="inline-flex items-center gap-1.5 px-2.5 py-1 bg-ht-blue/5 text-ht-blue rounded-full text-xs font-semibold">
-                        {AXIS_LABELS[axis]}: {tag}
+                        {axis === 'tagged_by' ? `Tagged By: ${TAGGED_BY_LABELS[tag]}` : `${AXIS_LABELS[axis]}: ${tag}`}
                         <button onClick={() => removeFilter(axis, tag)} className="hover:text-ht-orange transition-colors flex items-center justify-center">
                           <X className="w-3.5 h-3.5" />
                         </button>
@@ -411,7 +444,7 @@ export default function Companies() {
                       </div>
                       <div className="flex flex-col items-end gap-1.5">
                         {taggingIds.has(item.id)
-                          ? <span className="px-2.5 py-1 text-xs font-medium rounded-full bg-ht-blue/5 text-ht-blue/50 animate-pulse ring-1 ring-inset ring-ht-blue/10">Tagging…</span>
+                          ? taggingChip(taggingIds.get(item.id)!)
                           : priorityBadge(item.priority)}
                         <span className="text-xs text-ht-blue/40">{formatDate(item.updated_at)}</span>
                       </div>
@@ -464,7 +497,7 @@ export default function Companies() {
       )}
 
       {/* add company modal */}
-      {showAdd && <AddCompanyModal onClose={() => setShowAdd(false)} onAdded={(id) => { setShowAdd(false); setTaggingIds(prev => new Map(prev).set(id, Date.now())); load() }} />}
+      {showAdd && <AddCompanyModal onClose={() => setShowAdd(false)} onAdded={(id) => { setShowAdd(false); setTaggingIds(prev => new Map(prev).set(id, { startedAt: Date.now(), lastCheckedAt: 0 })); load(page, true) }} />}
     </div>
   )
 }

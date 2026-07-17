@@ -17,3 +17,32 @@
     background-color: rgba(27, 28, 75, 0.25);
   }
 }
+
+.print-only {
+  display: none;
+}
+
+@media print {
+  nav, .fixed, .no-print {
+    display: none !important;
+  }
+  .print-only {
+    display: flex !important;
+  }
+  body, .bg-ht-bg {
+    background: white !important;
+  }
+  main {
+    max-width: 100% !important;
+    padding: 0 !important;
+  }
+  .break-inside-avoid {
+    break-inside: avoid;
+  }
+  /* Browsers drop background images (including gradients used as text-clip fills, like the
+     "hometeam" wordmark) when printing unless explicitly told to keep them. */
+  * {
+    -webkit-print-color-adjust: exact !important;
+    print-color-adjust: exact !important;
+  }
+}
