@@ -4,7 +4,7 @@ import { X, Send, Sparkles, ChevronRight, Plus, History as HistoryIcon } from 'l
 import ReactMarkdown from 'react-markdown';
 import remarkGfm from 'remark-gfm';
 import { useChatContext } from '../context/ChatContext';
-import { sendChatMessage, formatRelativeTime } from '../api';
+import { sendChatMessage, formatRelativeTime, ChatAuthError } from '../api';
 
 interface Source {
   type: 'company' | 'policy';
@@ -202,6 +202,17 @@ export default function ChatWidget() {
       setConversationId(data.conversationId);
       setMessages(prev => [...prev, { role: 'assistant', content: data.response, sources: data.sources }]);
     } catch (error) {
+      if (error instanceof ChatAuthError) {
+        // Sign-in state, not a chat failure — send them to /login rather than showing an
+        // error bubble for something a sign-in click resolves instantly. isOpen lives in
+        // ChatContext (set by Landing's openChat() before this request even resolves), not
+        // ChatWidget's own state, so it survives navigating away — without closing it here,
+        // coming back to any page later (e.g. via the browser back button) re-opens the panel
+        // in whatever stale state it was left in instead of the normal closed FAB.
+        setIsOpen(false);
+        navigate('/login');
+        return;
+      }
       console.error("Failed to send message:", error);
       setMessages(prev => [...prev, { role: 'assistant', content: describeError(error) }]);
     } finally {

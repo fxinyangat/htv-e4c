@@ -138,6 +138,33 @@ interface ApiEnvelope<T> {
   data: T
 }
 
+export type UserRole = 'Admin' | 'Analyst' | 'Investor'
+
+export interface CurrentUser {
+  sub: string
+  email: string | null
+  name: string
+  picture: string | null
+  role: UserRole
+}
+
+// The session cookie is httpOnly (can't be read from JS), so this is the only way the
+// frontend learns who's signed in. Returns null on a 401 (not signed in) rather than throwing —
+// callers use this to decide whether to render the app or redirect to /login, so "not signed
+// in" is an expected outcome, not an error condition.
+export async function fetchCurrentUser(): Promise<CurrentUser | null> {
+  const res = await fetch('/api/auth/me')
+  if (res.status === 401) return null
+  if (!res.ok) throw new Error('Failed to check sign-in status')
+  const body: ApiEnvelope<CurrentUser> = await res.json()
+  return body.data
+}
+
+export async function logout(): Promise<void> {
+  const res = await fetch('/api/auth/logout', { method: 'POST' })
+  if (!res.ok) throw new Error('Failed to sign out')
+}
+
 export async function fetchTaxonomy(): Promise<TaxonomyData> {
   const res = await fetch('/api/taxonomy')
   if (!res.ok) throw new Error('Failed to fetch taxonomy from Notion')
@@ -803,6 +830,16 @@ function sleep(ms: number): Promise<void> {
   return new Promise(resolve => setTimeout(resolve, ms))
 }
 
+// Thrown specifically on a 401 from either chat call, so ChatWidget/Landing can prompt sign-in
+// instead of showing the generic "couldn't reach the AI assistant" message — chat now requires
+// an approved account.
+export class ChatAuthError extends Error {
+  constructor() {
+    super('Sign in to use Ask AI')
+    this.name = 'ChatAuthError'
+  }
+}
+
 const CHAT_POLL_INTERVAL_MS = 1500
 
 export async function sendChatMessage(
@@ -815,6 +852,7 @@ export async function sendChatMessage(
     headers: { 'Content-Type': 'application/json' },
     body: JSON.stringify({ message, conversationId }),
   })
+  if (startRes.status === 401) throw new ChatAuthError()
   const startBody = await startRes.json().catch(() => ({}))
   if (!startRes.ok) throw new Error(startBody.message || 'Failed to reach the AI agent')
   const jobId: string = startBody.data.jobId
@@ -822,6 +860,7 @@ export async function sendChatMessage(
   while (true) {
     await sleep(CHAT_POLL_INTERVAL_MS)
     const statusRes = await fetch(`/api/chat/${jobId}/status`)
+    if (statusRes.status === 401) throw new ChatAuthError()
     const job: ChatJobEnvelope = await statusRes.json().catch(() => ({}) as ChatJobEnvelope)
     if (!statusRes.ok) throw new Error(job.message || 'Failed to reach the AI agent')
 

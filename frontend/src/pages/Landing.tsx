@@ -1,8 +1,9 @@
 import { useRef, useState } from 'react'
 import { Link, useNavigate } from 'react-router-dom'
-import { Sparkles, Send, ArrowRight } from 'lucide-react'
+import { Sparkles, Send, ArrowRight, LogOut } from 'lucide-react'
 import DarkBackdrop from '../components/DarkBackdrop'
 import { useChatContext } from '../context/ChatContext'
+import { useAuthContext } from '../context/AuthContext'
 
 const NAV_LINKS = [
   { to: '/queue', label: 'Review Queue' },
@@ -21,14 +22,21 @@ const SUGGESTIONS = [
 export default function Landing() {
   const navigate = useNavigate()
   const { setPendingQuery, openChat } = useChatContext()
+  const { user, isLoading: authLoading, logout } = useAuthContext()
   const [query, setQuery] = useState('')
   const inputRef = useRef<HTMLInputElement>(null)
 
   // ChatWidget is mounted globally and opens in place on this page — hand the query off via
   // context, ChatWidget picks it up on mount (or already-mounted state) and sends it for real.
+  // Checked here, before ever opening the widget, rather than letting it open and then close
+  // again once the request 401s — that produced a visible flash-open-then-redirect for signed
+  // out visitors instead of a clean, immediate redirect. Ignored while authLoading is true (the
+  // brief window right after the app loads, before /api/auth/me resolves) — otherwise a fast
+  // click could see a stale "not logged in" state and bounce an actually-signed-in user.
   function handleAsk(e: React.FormEvent) {
     e.preventDefault()
-    if (!query.trim()) return
+    if (!query.trim() || authLoading) return
+    if (!user) return navigate('/login')
     setPendingQuery(query.trim())
     openChat()
   }
@@ -57,6 +65,8 @@ export default function Landing() {
           </div>
           <button
             onClick={() => {
+              if (authLoading) return
+              if (!user) return navigate('/login')
               openChat()
               inputRef.current?.focus()
             }}
@@ -64,6 +74,48 @@ export default function Landing() {
           >
             <Sparkles className="w-3.5 h-3.5" /> Ask Gordon
           </button>
+
+          {!authLoading && (
+            user ? (
+              <div className="flex items-center gap-2 pl-3 ml-1 border-l border-white/10">
+                <div className="relative group/avatar">
+                  {user.picture ? (
+                    <img
+                      src={user.picture}
+                      alt={user.name}
+                      referrerPolicy="no-referrer"
+                      className="w-9 h-9 rounded-full object-cover shrink-0 cursor-default"
+                    />
+                  ) : (
+                    <div className="w-9 h-9 rounded-full bg-ht-orange/20 text-ht-orange text-sm font-bold flex items-center justify-center shrink-0 cursor-default">
+                      {(user.name || user.email || '?').charAt(0).toUpperCase()}
+                    </div>
+                  )}
+                  <div className="pointer-events-none absolute right-0 top-full mt-2 w-56 rounded-xl bg-white text-ht-blue px-3.5 py-2.5 opacity-0 scale-95 origin-top-right group-hover/avatar:opacity-100 group-hover/avatar:scale-100 transition-all duration-150 z-10 shadow-lg">
+                    <p className="text-sm font-semibold truncate">{user.name}</p>
+                    {user.email && <p className="text-xs text-ht-blue/50 truncate mt-0.5">{user.email}</p>}
+                    <span className="inline-block mt-2 px-2 py-0.5 rounded-md bg-ht-orange/10 text-ht-orange text-[10px] font-bold uppercase tracking-wider">
+                      {user.role}
+                    </span>
+                  </div>
+                </div>
+                <button
+                  onClick={() => logout()}
+                  title="Sign out"
+                  className="p-1.5 rounded-lg text-white/40 hover:text-white hover:bg-white/5 transition-colors"
+                >
+                  <LogOut className="w-4 h-4" />
+                </button>
+              </div>
+            ) : (
+              <Link
+                to="/login"
+                className="px-4 py-2 border border-white/15 text-white/80 text-sm font-medium rounded-xl hover:bg-white/5 hover:text-white transition-colors"
+              >
+                Sign in
+              </Link>
+            )
+          )}
         </nav>
 
         <div className="flex-1 flex flex-col items-center justify-center px-4 py-20 text-center">

@@ -7,6 +7,7 @@ dotenv.config({ path: path.join(__dirname, '../.env.local') })
 
 const NOTION_API_KEY = process.env.NOTION_API_KEY
 export const NOTION_COMPANIES_DB_ID = process.env.NOTION_DATABASE_ID
+export const NOTION_USERS_DB_ID = process.env.NOTION_USERS_DB_ID
 const NOTION_VERSION = '2022-06-28'
 
 if (!NOTION_API_KEY) {
@@ -14,6 +15,9 @@ if (!NOTION_API_KEY) {
 }
 if (!NOTION_COMPANIES_DB_ID) {
   console.warn('WARNING: NOTION_DATABASE_ID is not set')
+}
+if (!NOTION_USERS_DB_ID) {
+  console.warn('WARNING: NOTION_USERS_DB_ID is not set')
 }
 
 export async function notionFetch(pathSuffix, options = {}) {
@@ -52,6 +56,9 @@ export function readSelect(prop) {
 export function readUrl(prop) {
   return prop?.url || null
 }
+export function readEmail(prop) {
+  return prop?.email || null
+}
 
 // Read the configured dropdown options off a select/multi_select property definition
 // (as returned by GET /databases/:id), not off a page's property value.
@@ -76,6 +83,9 @@ export function toRichText(value) {
 }
 export function toUrl(value) {
   return { url: value || null }
+}
+export function toEmail(value) {
+  return { email: value || null }
 }
 
 // Pages through a database query 100 rows at a time until Notion reports no more pages left.

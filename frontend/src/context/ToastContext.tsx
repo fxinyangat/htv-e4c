@@ -40,7 +40,11 @@ export function ToastProvider({ children }: { children: ReactNode }) {
   return (
     <ToastContext.Provider value={{ showToast }}>
       {children}
-      <div className="fixed top-6 right-6 z-[100] flex flex-col gap-3 w-full max-w-sm">
+      {/* top-20 (not top-6) so this never overlaps AppLayout's sticky nav — both anchor to the
+          top-right, and the nav's z-index (z-50) is lower than this toast layer's (z-100), so
+          without the extra clearance the toast would render on top of the nav's right-side
+          content (Ask AI button, user email, logout) instead of below it. */}
+      <div className="fixed top-20 right-6 z-[100] flex flex-col gap-3 w-full max-w-sm">
         {toasts.map(toast => {
           const meta = TOAST_META[toast.type]
           const Icon = meta.icon

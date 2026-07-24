@@ -1,26 +1,25 @@
-import { useState } from 'react'
-import { useNavigate } from 'react-router-dom'
-import { Sparkles, Mail, Lock, Eye, EyeOff } from 'lucide-react'
+import { useSearchParams } from 'react-router-dom'
+import { Sparkles, Clock, AlertCircle } from 'lucide-react'
 import DarkBackdrop from '../components/DarkBackdrop'
-import { isValidEmail } from '../utils/validation'
+
+function GoogleIcon() {
+  return (
+    <svg className="w-4 h-4" viewBox="0 0 24 24">
+      <path fill="#4285F4" d="M23.52 12.27c0-.85-.08-1.67-.22-2.45H12v4.64h6.47a5.53 5.53 0 0 1-2.4 3.63v3h3.87c2.27-2.09 3.58-5.17 3.58-8.82Z" />
+      <path fill="#34A853" d="M12 24c3.24 0 5.96-1.07 7.94-2.91l-3.87-3a7.4 7.4 0 0 1-11-3.9H1.08v3.09A12 12 0 0 0 12 24Z" />
+      <path fill="#FBBC05" d="M5.07 14.19a7.2 7.2 0 0 1 0-4.38V6.72H1.08a12 12 0 0 0 0 10.56l3.99-3.09Z" />
+      <path fill="#EA4335" d="M12 4.77c1.76 0 3.35.61 4.6 1.8l3.44-3.44C17.95 1.19 15.24 0 12 0A12 12 0 0 0 1.08 6.72l3.99 3.09A7.16 7.16 0 0 1 12 4.77Z" />
+    </svg>
+  )
+}
 
 export default function Login() {
-  const navigate = useNavigate()
-  const [email, setEmail] = useState('')
-  const [password, setPassword] = useState('')
-  const [showPassword, setShowPassword] = useState(false)
-  const [loading, setLoading] = useState(false)
-  const [touched, setTouched] = useState(false)
+  const [searchParams] = useSearchParams()
+  const isPending = searchParams.get('pending') === '1'
+  const error = searchParams.get('error')
 
-  const emailError = email.trim() ? (!isValidEmail(email) ? 'Enter a valid email address' : '') : 'Email is required'
-  const passwordError = password ? '' : 'Password is required'
-
-  function handleSubmit(e: React.FormEvent) {
-    e.preventDefault()
-    setTouched(true)
-    if (emailError || passwordError) return
-    setLoading(true)
-    setTimeout(() => navigate('/'), 500)
+  function handleGoogleSignIn() {
+    window.location.href = '/api/auth/google'
   }
 
   return (
@@ -43,62 +42,33 @@ export default function Login() {
           <h1 className="text-2xl font-display font-bold text-white">Welcome back</h1>
           <p className="text-sm text-white/50 mt-1 mb-6">Sign in to your Hometeam account</p>
 
-          <form onSubmit={handleSubmit} className="space-y-5">
-            <div>
-              <label className="block text-[10px] font-bold text-white/40 uppercase tracking-widest mb-1.5">Email</label>
-              <div className="relative">
-                <Mail className="w-4 h-4 text-white/30 absolute left-3.5 top-1/2 -translate-y-1/2" />
-                <input
-                  type="email"
-                  value={email}
-                  onChange={e => setEmail(e.target.value)}
-                  placeholder="you@hometeam.vc"
-                  className={`w-full pl-10 pr-4 py-2.5 text-sm bg-white/5 border rounded-xl focus:outline-none focus:ring-4 transition-all text-white placeholder:text-white/25 ${
-                    touched && emailError ? 'border-red-400/60 focus:border-red-400/60 focus:ring-red-400/10' : 'border-white/10 focus:border-ht-orange/50 focus:ring-ht-orange/10'
-                  }`}
-                />
-              </div>
-              {touched && emailError && <p className="text-xs text-red-400 mt-1.5">{emailError}</p>}
+          {isPending && (
+            <div className="flex items-start gap-3 bg-amber-400/10 border border-amber-400/20 rounded-xl px-4 py-3 mb-5">
+              <Clock className="w-4 h-4 text-amber-400 mt-0.5 shrink-0" />
+              <p className="text-sm text-amber-200/90">
+                Your account is pending approval. An admin needs to approve your access before you can sign in.
+              </p>
             </div>
+          )}
 
-            <div>
-              <div className="flex items-center justify-between mb-1.5">
-                <label className="text-[10px] font-bold text-white/40 uppercase tracking-widest">Password</label>
-                <button type="button" className="text-xs font-medium text-ht-orange hover:text-ht-orange/80 transition-colors">Forgot password?</button>
-              </div>
-              <div className="relative">
-                <Lock className="w-4 h-4 text-white/30 absolute left-3.5 top-1/2 -translate-y-1/2" />
-                <input
-                  type={showPassword ? 'text' : 'password'}
-                  value={password}
-                  onChange={e => setPassword(e.target.value)}
-                  placeholder="••••••••"
-                  className={`w-full pl-10 pr-10 py-2.5 text-sm bg-white/5 border rounded-xl focus:outline-none focus:ring-4 transition-all text-white placeholder:text-white/25 ${
-                    touched && passwordError ? 'border-red-400/60 focus:border-red-400/60 focus:ring-red-400/10' : 'border-white/10 focus:border-ht-orange/50 focus:ring-ht-orange/10'
-                  }`}
-                />
-                <button
-                  type="button"
-                  onClick={() => setShowPassword(s => !s)}
-                  className="absolute right-3.5 top-1/2 -translate-y-1/2 text-white/30 hover:text-white/60 transition-colors"
-                >
-                  {showPassword ? <EyeOff className="w-4 h-4" /> : <Eye className="w-4 h-4" />}
-                </button>
-              </div>
-              {touched && passwordError && <p className="text-xs text-red-400 mt-1.5">{passwordError}</p>}
+          {error && (
+            <div className="flex items-start gap-3 bg-red-400/10 border border-red-400/20 rounded-xl px-4 py-3 mb-5">
+              <AlertCircle className="w-4 h-4 text-red-400 mt-0.5 shrink-0" />
+              <p className="text-sm text-red-200/90">
+                Sign-in failed. Please try again.
+              </p>
             </div>
+          )}
 
-            <button
-              type="submit"
-              disabled={loading}
-              className="w-full py-3 bg-ht-orange text-white text-sm font-semibold rounded-xl shadow-lg shadow-ht-orange/30 hover:shadow-ht-orange/50 hover:-translate-y-0.5 transition-all disabled:opacity-60"
-            >
-              {loading ? 'Signing in…' : 'Sign in'}
-            </button>
-          </form>
+          <button
+            onClick={handleGoogleSignIn}
+            className="w-full flex items-center justify-center gap-2.5 py-3 bg-white text-ht-blue text-sm font-semibold rounded-xl shadow-lg hover:shadow-xl hover:-translate-y-0.5 transition-all"
+          >
+            <GoogleIcon /> Sign in with Google
+          </button>
         </div>
 
-        <p className="text-xs text-white/25 mt-6">Hometeam Ventures · Internal platform</p>
+        <p className="text-xs text-white/25 mt-6">Hometeam Ventures</p>
       </div>
     </DarkBackdrop>
   )
