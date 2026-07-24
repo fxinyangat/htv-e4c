@@ -1,7 +1,6 @@
 import { Outlet, NavLink, Link } from 'react-router-dom'
 import { Sparkles } from 'lucide-react'
 import { useChatContext } from '../context/ChatContext'
-import ChatWidget from './ChatWidget'
 
 const navLink = ({ isActive }: { isActive: boolean }) =>
   `group relative px-1 py-4 text-sm font-medium transition-colors ${
@@ -53,7 +52,6 @@ export default function AppLayout() {
       <main className="max-w-[1400px] mx-auto px-8 py-10">
         <Outlet />
       </main>
-      <ChatWidget />
     </div>
   )
 }

@@ -130,10 +130,19 @@ export interface TaxonomyData {
   andra_knockout_states: string[]
 }
 
+// Every backend response is shaped { status, message, data } — unwrap `data` to get the
+// actual payload each fetch* function's return type promises.
+interface ApiEnvelope<T> {
+  status: 'success' | 'error'
+  message: string
+  data: T
+}
+
 export async function fetchTaxonomy(): Promise<TaxonomyData> {
   const res = await fetch('/api/taxonomy')
   if (!res.ok) throw new Error('Failed to fetch taxonomy from Notion')
-  return res.json()
+  const body: ApiEnvelope<TaxonomyData> = await res.json()
+  return body.data
 }
 
 export interface InboundBreakdown {
@@ -161,7 +170,8 @@ export interface InboundStats {
 export async function fetchInboundStats(ranges: { from: string; to: string }[]): Promise<InboundStats> {
   const res = await fetch(`/api/stats/inbound?ranges=${encodeURIComponent(JSON.stringify(ranges))}`)
   if (!res.ok) throw new Error('Failed to fetch inbound stats from Notion')
-  return res.json()
+  const body: ApiEnvelope<InboundStats> = await res.json()
+  return body.data
 }
 
 // Internal pipeline/tagging-health metrics for the Portfolio Metrics page — not portfolio
@@ -183,7 +193,8 @@ export interface PipelineStats {
 export async function fetchPipelineStats(): Promise<PipelineStats> {
   const res = await fetch('/api/stats/pipeline')
   if (!res.ok) throw new Error('Failed to fetch pipeline stats from Notion')
-  return res.json()
+  const body: ApiEnvelope<PipelineStats> = await res.json()
+  return body.data
 }
 
 export const AXIS_LABELS: Record<string, string> = {
@@ -499,7 +510,8 @@ export async function fetchQueue(params: {
   const qs = buildListQuery(params)
   const res = await fetch(`/api/companies/queue?${qs}`)
   if (!res.ok) throw new Error('Failed to fetch queue from Notion')
-  const data = await res.json()
+  const body: ApiEnvelope<{ total: number; items: QueueListItem[]; cached_at: number }> = await res.json()
+  const data = body.data
   if (data.cached_at) companiesCachedAt = data.cached_at
   return { total: data.total, items: data.items }
 }
@@ -530,8 +542,8 @@ export const REFRESH_COOLDOWN_S = 60
 export async function refreshCompanies(): Promise<void> {
   const res = await fetch('/api/companies/list?refresh=1&pageSize=1')
   if (!res.ok) throw new Error('Failed to refresh companies from Notion')
-  const data = await res.json()
-  if (data.cached_at) companiesCachedAt = data.cached_at
+  const body: ApiEnvelope<{ cached_at: number }> = await res.json()
+  if (body.data.cached_at) companiesCachedAt = body.data.cached_at
 }
 
 export interface AxisApproval {
@@ -552,7 +564,8 @@ async function patchRealCompany(id: string, fields: AxisApproval | CompanyUpdate
     body: JSON.stringify(fields),
   })
   if (!res.ok) throw new Error('Failed to save changes to Notion')
-  return res.json() as Promise<Company>
+  const body: ApiEnvelope<Company> = await res.json()
+  return body.data
 }
 
 // Approve Tags: marks a company human-reviewed and persists the (possibly human-corrected)
@@ -569,7 +582,10 @@ export async function updateRealCompany(id: string, update: CompanyUpdate): Prom
 // "Delete" = archive in Notion — soft, reversible from within Notion itself.
 export async function deleteRealCompany(id: string): Promise<void> {
   const res = await fetch(`/api/companies/${id}`, { method: 'DELETE' })
-  if (!res.ok) throw new Error('Failed to delete company in Notion')
+  if (!res.ok) {
+    const body = await res.json().catch(() => ({}))
+    throw new Error(body.message || 'Failed to delete company in Notion')
+  }
 }
 
 // "5 mins ago" style relative time, for showing when the company list was last pulled from Notion.
@@ -591,7 +607,8 @@ export async function fetchCompany(id: string, force = false): Promise<Company> 
     // not a snapshot that could be up to an hour old.
     const res = await fetch(`/api/companies/${id}${force ? '?fresh=1' : ''}`)
     if (!res.ok) throw new Error('Failed to fetch company from Notion')
-    return res.json()
+    const body: ApiEnvelope<Company> = await res.json()
+    return body.data
   }
   const company = store.find(c => c.id === id)
   if (!company) throw new Error('Company not found')
@@ -609,7 +626,8 @@ export async function fetchCompanies(params: {
   const qs = buildListQuery(params)
   const res = await fetch(`/api/companies/list?${qs}`)
   if (!res.ok) throw new Error('Failed to fetch companies from Notion')
-  const data = await res.json()
+  const body: ApiEnvelope<{ total: number; items: CompanyListItem[]; cached_at: number }> = await res.json()
+  const data = body.data
   if (data.cached_at) companiesCachedAt = data.cached_at
   return { total: data.total, items: data.items }
 }
@@ -631,9 +649,10 @@ export async function createRealCompany(data: NewCompany): Promise<Company> {
   })
   if (!res.ok) {
     const body = await res.json().catch(() => ({}))
-    throw new Error(body.error || 'Failed to create company in Notion')
+    throw new Error(body.message || 'Failed to create company in Notion')
   }
-  return res.json()
+  const body: ApiEnvelope<Company> = await res.json()
+  return body.data
 }
 
 export async function createCompany(data: {
@@ -768,19 +787,48 @@ export interface ChatSource {
 // conversationId threads follow-up messages into the same Dust conversation so the agent has
 // real memory of the exchange — pass null for the first message, then the conversationId this
 // returns for every message after that.
+// The backend streams newline-delimited JSON: zero or more {type:'status'} lines while the
+// agent works (tool calls can take 30s+), then one terminal {type:'done'} or {type:'error'}.
+// `onStatus` gets called for each status line, so the UI can show what's happening instead of
+// a static spinner for the whole wait.
 export async function sendChatMessage(
   message: string,
-  conversationId: string | null
+  conversationId: string | null,
+  onStatus?: (status: string) => void
 ): Promise<{ response: string; conversationId: string; sources: ChatSource[] }> {
   const res = await fetch('/api/chat', {
     method: 'POST',
     headers: { 'Content-Type': 'application/json' },
     body: JSON.stringify({ message, conversationId }),
   })
-  if (!res.ok) {
+  if (!res.ok || !res.body) {
     const body = await res.json().catch(() => ({}))
-    throw new Error(body.error || 'Failed to reach the AI agent')
+    throw new Error(body.message || 'Failed to reach the AI agent')
   }
-  const data = await res.json()
-  return { response: data.response, conversationId: data.conversationId, sources: [] }
+
+  const reader = res.body.getReader()
+  const decoder = new TextDecoder()
+  let buffer = ''
+  let result: { response: string; conversationId: string } | null = null
+
+  // Each streamed line uses the same {status, message, data} envelope as every other endpoint:
+  // 'progress' lines carry the status text in `message`, the terminal line is either
+  // 'success' (data holds { response, conversationId }) or 'error' (message holds the reason).
+  while (true) {
+    const { done, value } = await reader.read()
+    if (done) break
+    buffer += decoder.decode(value, { stream: true })
+    const lines = buffer.split('\n')
+    buffer = lines.pop() ?? ''
+    for (const line of lines) {
+      if (!line.trim()) continue
+      const event = JSON.parse(line)
+      if (event.status === 'progress') onStatus?.(event.message)
+      else if (event.status === 'success') result = { response: event.data.response, conversationId: event.data.conversationId }
+      else if (event.status === 'error') throw new Error(event.message)
+    }
+  }
+
+  if (!result) throw new Error('Connection closed before the agent finished responding')
+  return { ...result, sources: [] }
 }

@@ -11,20 +11,48 @@ const app = express()
 app.use(cors())
 app.use(express.json())
 
+// Every REST response (success or error) is shaped the same way, so the frontend never has
+// to special-case a given endpoint's payload structure.
+function sendData(res, data, message = 'OK', statusCode = 200) {
+  res.status(statusCode).json({ status: 'success', message, data })
+}
+function sendError(res, err, fallbackMessage = 'Something went wrong') {
+  console.error(err)
+  res.status(err.status || 500).json({ status: 'error', message: err.message || fallbackMessage, data: null })
+}
+
 // Ask AI chat widget — proxies to the Dust agent already configured for this workspace.
 // conversationId threads follow-up messages into the same Dust conversation (so the agent
 // has real memory of the exchange) instead of resending the whole history on every turn.
+// Streams newline-delimited JSON: zero or more {type:'status', status} lines while the agent
+// works (tool calls can take 30s+), then one terminal {type:'done', ...} or {type:'error', ...}.
+// Plain fetch + a stream reader on the frontend, not EventSource — this is a one-shot POST
+// response, not a long-lived subscription, so full SSE framing/reconnect semantics aren't needed.
 app.post('/api/chat', async (req, res) => {
+  const { message, conversationId } = req.body
+  if (!message || !message.trim()) {
+    return res.status(400).json({ status: 'error', message: 'Message is required', data: null })
+  }
+  // Agent replies (multi-step tool calls) can take several minutes — Node's default socket
+  // timeout would otherwise kill the connection before dust.js's own 5-min poll timeout hits.
+  req.setTimeout(6 * 60 * 1000)
+  res.setTimeout(6 * 60 * 1000)
+  res.setHeader('Content-Type', 'application/x-ndjson')
+  res.setHeader('Cache-Control', 'no-cache')
+  res.flushHeaders?.()
+
+  // Each streamed line uses the same {status, message, data} envelope as every other
+  // endpoint — 'progress' lines carry the status text in `message`, the terminal line is
+  // either 'success' (data holds the reply) or 'error'.
   try {
-    const { message, conversationId } = req.body
-    if (!message || !message.trim()) {
-      return res.status(400).json({ error: 'Message is required' })
-    }
-    const { response, conversationId: newConversationId } = await askAgent(message.trim(), conversationId || undefined)
-    res.json({ response, conversationId: newConversationId })
+    const onStatus = status => res.write(JSON.stringify({ status: 'progress', message: status, data: null }) + '\n')
+    const { response, conversationId: newConversationId } = await askAgent(message.trim(), conversationId || undefined, onStatus)
+    res.write(JSON.stringify({ status: 'success', message: 'Response ready', data: { response, conversationId: newConversationId } }) + '\n')
   } catch (err) {
     console.error(err)
-    res.status(err.status || 500).json({ error: err.message })
+    res.write(JSON.stringify({ status: 'error', message: err.message, data: null }) + '\n')
+  } finally {
+    res.end()
   }
 })
 
@@ -151,10 +179,9 @@ async function getFreshCompanies(wantsRefresh) {
 
 app.get('/api/companies', async (req, res) => {
   try {
-    res.json(await getFreshCompanies(req.query.refresh === '1'))
+    sendData(res, await getFreshCompanies(req.query.refresh === '1'))
   } catch (err) {
-    console.error(err)
-    res.status(err.status || 500).json({ error: err.message })
+    sendError(res, err)
   }
 })
 
@@ -298,10 +325,9 @@ app.get('/api/companies/list', async (req, res) => {
     else if (sort === 'tags_asc') items.sort((a, b) => a.tag_count - b.tag_count)
     else items.sort((a, b) => b.updated_at.localeCompare(a.updated_at))
 
-    res.json({ total: items.length, items: paginate(items, req.query.page, req.query.pageSize), cached_at })
+    sendData(res, { total: items.length, items: paginate(items, req.query.page, req.query.pageSize), cached_at })
   } catch (err) {
-    console.error(err)
-    res.status(err.status || 500).json({ error: err.message })
+    sendError(res, err)
   }
 })
 
@@ -332,10 +358,9 @@ app.get('/api/companies/queue', async (req, res) => {
     else if (sort === 'score_desc') items.sort((a, b) => b.score - a.score)
     else items.sort((a, b) => b.updated_at.localeCompare(a.updated_at))
 
-    res.json({ total: items.length, items: paginate(items, req.query.page, req.query.pageSize), cached_at })
+    sendData(res, { total: items.length, items: paginate(items, req.query.page, req.query.pageSize), cached_at })
   } catch (err) {
-    console.error(err)
-    res.status(err.status || 500).json({ error: err.message })
+    sendError(res, err)
   }
 })
 
@@ -409,7 +434,7 @@ app.get('/api/stats/inbound', async (req, res) => {
       else if (stages.length === 1 && stageCounts[stages[0]] !== undefined) stageCounts[stages[0]]++
     }
 
-    res.json({
+    sendData(res, {
       inboundTotal: scoped.length,
       femaleFounders: scoped.filter(c => (c.diversity_statuses || []).includes('Female Founder')).length,
       bipocFounders: scoped.filter(c => (c.diversity_statuses || []).includes('BIPOC Founder')).length,
@@ -427,8 +452,7 @@ app.get('/api/stats/inbound', async (req, res) => {
       cached_at,
     })
   } catch (err) {
-    console.error(err)
-    res.status(err.status || 500).json({ error: err.message })
+    sendError(res, err)
   }
 })
 
@@ -471,7 +495,7 @@ app.get('/api/stats/pipeline', async (req, res) => {
 
     const aiTouched = (taggedBy['AI Agent'] ?? 0) + (taggedBy['Human'] ?? 0)
 
-    res.json({
+    sendData(res, {
       total,
       taggedBy,
       scoreBands,
@@ -485,8 +509,7 @@ app.get('/api/stats/pipeline', async (req, res) => {
       cached_at,
     })
   } catch (err) {
-    console.error(err)
-    res.status(err.status || 500).json({ error: err.message })
+    sendError(res, err)
   }
 })
 
@@ -497,7 +520,7 @@ app.post('/api/companies', async (req, res) => {
   try {
     const { name, domain, description, origin_source, origin_category } = req.body
     if (!name || !name.trim()) {
-      return res.status(400).json({ error: 'Company name is required' })
+      return res.status(400).json({ status: 'error', message: 'Company name is required', data: null })
     }
     const properties = { 'Name': toTitle(name) }
     if (domain) properties['Domain'] = toUrl(/^https?:\/\//.test(domain) ? domain : `https://${domain}`)
@@ -516,10 +539,9 @@ app.post('/api/companies', async (req, res) => {
     if (companiesCache) {
       companiesCache.companies.unshift(mapped)
     }
-    res.json(mapped)
+    sendData(res, mapped, 'Company created', 201)
   } catch (err) {
-    console.error(err)
-    res.status(err.status || 500).json({ error: err.message })
+    sendError(res, err)
   }
 })
 
@@ -531,7 +553,7 @@ app.get('/api/companies/:id', async (req, res) => {
     const wantsFresh = req.query.fresh === '1'
     if (!wantsFresh && companiesCache) {
       const cached = companiesCache.companies.find(c => c.id === req.params.id)
-      if (cached) return res.json(cached)
+      if (cached) return sendData(res, cached)
     }
     const page = await notionFetch(`/pages/${req.params.id}`)
     const mapped = mapCompany(page)
@@ -540,10 +562,9 @@ app.get('/api/companies/:id', async (req, res) => {
       if (idx !== -1) companiesCache.companies[idx] = mapped
       else companiesCache.companies.unshift(mapped)
     }
-    res.json(mapped)
+    sendData(res, mapped)
   } catch (err) {
-    console.error(err)
-    res.status(err.status || 500).json({ error: err.message })
+    sendError(res, err)
   }
 })
 
@@ -585,10 +606,9 @@ app.patch('/api/companies/:id', async (req, res) => {
       const idx = companiesCache.companies.findIndex(c => c.id === mapped.id)
       if (idx !== -1) companiesCache.companies[idx] = mapped
     }
-    res.json(mapped)
+    sendData(res, mapped, 'Company updated')
   } catch (err) {
-    console.error(err)
-    res.status(err.status || 500).json({ error: err.message })
+    sendError(res, err)
   }
 })
 
@@ -603,10 +623,9 @@ app.delete('/api/companies/:id', async (req, res) => {
     if (companiesCache) {
       companiesCache.companies = companiesCache.companies.filter(c => c.id !== req.params.id)
     }
-    res.json({ success: true })
+    sendData(res, null, 'Company deleted')
   } catch (err) {
-    console.error(err)
-    res.status(err.status || 500).json({ error: err.message })
+    sendError(res, err)
   }
 })
 
@@ -620,7 +639,7 @@ app.get('/api/taxonomy', async (req, res) => {
   try {
     const fresh = req.query.refresh === '1'
     if (!fresh && taxonomyCache && Date.now() - taxonomyCachedAt < TAXONOMY_TTL_MS) {
-      return res.json(taxonomyCache)
+      return sendData(res, taxonomyCache)
     }
 
     const db = await notionFetch(`/databases/${NOTION_COMPANIES_DB_ID}`)
@@ -639,10 +658,9 @@ app.get('/api/taxonomy', async (req, res) => {
 
     taxonomyCache = taxonomy
     taxonomyCachedAt = Date.now()
-    res.json(taxonomy)
+    sendData(res, taxonomy)
   } catch (err) {
-    console.error(err)
-    res.status(err.status || 500).json({ error: err.message })
+    sendError(res, err)
   }
 })
 

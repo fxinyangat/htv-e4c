@@ -2,7 +2,7 @@ import { useRef, useState } from 'react'
 import { Link, useNavigate } from 'react-router-dom'
 import { Sparkles, Send, ArrowRight } from 'lucide-react'
 import DarkBackdrop from '../components/DarkBackdrop'
-import { useToast } from '../context/ToastContext'
+import { useChatContext } from '../context/ChatContext'
 
 const NAV_LINKS = [
   { to: '/queue', label: 'Review Queue' },
@@ -12,22 +12,25 @@ const NAV_LINKS = [
 ]
 
 const SUGGESTIONS = [
-  'Which companies need tagging?',
-  'Show me top AI construction startups',
-  'Any unreviewed deals this week?',
-  "What's our pipeline look like?",
+  'What construction tech categories do we track?',
+  'Show me our top AI construction startups',
+  'What do we know about BuildTech AI?',
+  "What's our inbound deal flow been like this month?",
 ]
 
 export default function Landing() {
   const navigate = useNavigate()
-  const { showToast } = useToast()
+  const { setPendingQuery, openChat } = useChatContext()
   const [query, setQuery] = useState('')
   const inputRef = useRef<HTMLInputElement>(null)
 
+  // ChatWidget is mounted globally and opens in place on this page — hand the query off via
+  // context, ChatWidget picks it up on mount (or already-mounted state) and sends it for real.
   function handleAsk(e: React.FormEvent) {
     e.preventDefault()
     if (!query.trim()) return
-    showToast('info', 'Hometeam AI is coming soon', "This landing search isn't wired up yet — try the Ask AI widget inside the app for now.")
+    setPendingQuery(query.trim())
+    openChat()
   }
 
   return (
@@ -53,10 +56,13 @@ export default function Landing() {
             ))}
           </div>
           <button
-            onClick={() => inputRef.current?.focus()}
+            onClick={() => {
+              openChat()
+              inputRef.current?.focus()
+            }}
             className="px-4 py-2 bg-ht-orange text-white text-sm font-semibold rounded-xl shadow-lg shadow-ht-orange/20 hover:shadow-ht-orange/40 transition-all flex items-center gap-1.5"
           >
-            <Sparkles className="w-3.5 h-3.5" /> Ask AI
+            <Sparkles className="w-3.5 h-3.5" /> Ask Gordon
           </button>
         </nav>
 

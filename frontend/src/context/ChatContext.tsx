@@ -7,6 +7,10 @@ interface ChatContextType {
   isOpen: boolean;
   openChat: () => void;
   setIsOpen: (open: boolean) => void;
+  // Set by the Landing page's search box — ChatWidget (mounted globally) picks this up,
+  // auto-sends it, then clears it.
+  pendingQuery: string | null;
+  setPendingQuery: (query: string | null) => void;
 }
 
 const ChatContext = createContext<ChatContextType | undefined>(undefined);
@@ -15,6 +19,7 @@ export function ChatProvider({ children }: { children: ReactNode }) {
   const [activeCompanyId, setActiveCompanyId] = useState<string | null>(null);
   const [activeCompanyName, setActiveCompanyName] = useState<string | null>(null);
   const [isOpen, setIsOpen] = useState(false);
+  const [pendingQuery, setPendingQuery] = useState<string | null>(null);
 
   const setContext = (id: string | null, name: string | null) => {
     setActiveCompanyId(id);
@@ -22,7 +27,7 @@ export function ChatProvider({ children }: { children: ReactNode }) {
   };
 
   return (
-    <ChatContext.Provider value={{ activeCompanyId, activeCompanyName, setContext, isOpen, openChat: () => setIsOpen(true), setIsOpen }}>
+    <ChatContext.Provider value={{ activeCompanyId, activeCompanyName, setContext, isOpen, openChat: () => setIsOpen(true), setIsOpen, pendingQuery, setPendingQuery }}>
       {children}
     </ChatContext.Provider>
   );

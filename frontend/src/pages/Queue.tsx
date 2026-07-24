@@ -341,7 +341,7 @@ export default function Queue() {
   const [page, setPage] = useState(1)
   const [search, setSearch] = useState('')
   const [searchInput, setSearchInput] = useState('')
-  const [sort, setSort] = useState('score_asc')
+  const [sort, setSort] = useState('updated_desc')
   // Defaults to Untagged + AI Tagged — the actual queue (anything awaiting review). Human-reviewed
   // companies live under "Recently Reviewed" and are opt-in via the Tagged By filter.
   const [filters, setFilters] = useState<Record<string, string[]>>({ tagged_by: ['NA', 'AI Agent'] })

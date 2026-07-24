@@ -48,14 +48,58 @@ function messagePayload(content) {
   }
 }
 
-// Dust generates the agent's reply asynchronously — poll the conversation until that
-// message reaches a terminal status, rather than trying to stream token-by-token for now.
-async function pollForAgentReply(conversationSId, agentMessageSId, { intervalMs = 1000, timeoutMs = 45000 } = {}) {
+// Turns a Dust tool-call action into a short human-readable status line — e.g. the Notion
+// query tool becomes "Searching companies database…" rather than exposing raw tool/model
+// internals (chain-of-thought reasoning) to the end user.
+function describeAction(action) {
+  if (!action) return null
+  const rawName = action.toolName || action.functionCallName || ''
+  const name = rawName.toLowerCase()
+  if (!rawName) return null
+  if (name.includes('notion')) return 'Searching companies database…'
+  if (name.includes('search')) return 'Searching…'
+  const pretty = rawName.replace(/[_-]+/g, ' ').replace(/\b\w/g, c => c.toUpperCase())
+  return `Using ${pretty}…`
+}
+
+// Dust generates the agent's reply asynchronously — poll the conversation until that message
+// reaches a terminal status. `onStatus` (optional) is called with a short status string whenever
+// the agent's in-progress tool-call activity changes, so the UI can show what's happening instead
+// of a static spinner for however long generation takes (multi-step tool calls can run a while).
+async function pollForAgentReply(conversationSId, agentMessageSId, onStatus, { intervalMs = 1000, timeoutMs = 5 * 60 * 1000 } = {}) {
   const deadline = Date.now() + timeoutMs
+  let lastStatus = null
+  let lastActionCount = 0
+  let staleTicks = 0 // consecutive polls with no new tool-call action appended
   while (Date.now() < deadline) {
     const data = await dustFetch(`/assistant/conversations/${conversationSId}`)
     const agentMsg = data.conversation.content.flat().find(m => m.sId === agentMessageSId)
     if (!agentMsg) throw new Error('Agent message not found in conversation')
+
+    if (onStatus) {
+      const actions = agentMsg.actions || []
+      let label
+      if (actions.length > lastActionCount) {
+        // A new tool call started since the last poll — describe it.
+        label = describeAction(actions[actions.length - 1]) ?? 'Thinking…'
+        staleTicks = 0
+      } else if (actions.length === 0) {
+        label = 'Thinking…'
+      } else {
+        // No new tool call this tick — either still mid-tool-call, or done with tools and
+        // now composing the final answer (often the longest phase for a big response). Give
+        // it a couple ticks before assuming the latter, so a slow single tool call doesn't
+        // flicker straight to "Composing" before it's actually finished.
+        staleTicks++
+        label = staleTicks >= 2 ? 'Composing response…' : lastStatus
+      }
+      lastActionCount = actions.length
+      if (label && label !== lastStatus) {
+        lastStatus = label
+        onStatus(label)
+      }
+    }
+
     if (agentMsg.status === 'succeeded') return agentMsg.content
     if (agentMsg.status === 'failed') throw new Error(agentMsg.error?.message || 'Dust agent failed to respond')
     if (agentMsg.status === 'cancelled') throw new Error('Dust agent generation was cancelled')
@@ -67,7 +111,7 @@ async function pollForAgentReply(conversationSId, agentMessageSId, { intervalMs 
 // Starts a new conversation (first message) or continues an existing one (conversationId set).
 // Returns the agent's reply text plus the conversation's sId, so the frontend can thread
 // follow-up messages into the same conversation rather than losing context each turn.
-export async function askAgent(content, conversationId) {
+export async function askAgent(content, conversationId, onStatus) {
   let conversationSId = conversationId
   let agentMessageSId
 
@@ -89,6 +133,6 @@ export async function askAgent(content, conversationId) {
     agentMessageSId = data.agentMessages[0].sId
   }
 
-  const response = await pollForAgentReply(conversationSId, agentMessageSId)
+  const response = await pollForAgentReply(conversationSId, agentMessageSId, onStatus)
   return { response, conversationId: conversationSId }
 }
