@@ -66,7 +66,10 @@ function describeAction(action) {
 // reaches a terminal status. `onStatus` (optional) is called with a short status string whenever
 // the agent's in-progress tool-call activity changes, so the UI can show what's happening instead
 // of a static spinner for however long generation takes (multi-step tool calls can run a while).
-async function pollForAgentReply(conversationSId, agentMessageSId, onStatus, { intervalMs = 1000, timeoutMs = 5 * 60 * 1000 } = {}) {
+// 4 minutes, not 5 — leaves safety margin under Vercel Fluid Compute's 300s (5 min) duration
+// cap on the Hobby plan, since the background job running this needs to finish within that
+// window (see chatController.js's runInBackground/waitUntil).
+async function pollForAgentReply(conversationSId, agentMessageSId, onStatus, { intervalMs = 1000, timeoutMs = 4 * 60 * 1000 } = {}) {
   const deadline = Date.now() + timeoutMs
   let lastStatus = null
   let lastActionCount = 0

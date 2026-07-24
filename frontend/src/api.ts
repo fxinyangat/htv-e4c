@@ -787,48 +787,51 @@ export interface ChatSource {
 // conversationId threads follow-up messages into the same Dust conversation so the agent has
 // real memory of the exchange — pass null for the first message, then the conversationId this
 // returns for every message after that.
-// The backend streams newline-delimited JSON: zero or more {type:'status'} lines while the
-// agent works (tool calls can take 30s+), then one terminal {type:'done'} or {type:'error'}.
-// `onStatus` gets called for each status line, so the UI can show what's happening instead of
-// a static spinner for the whole wait.
+//
+// The backend runs the Dust exchange as a background job (Dust's multi-step tool calls can
+// take a few minutes) rather than holding one HTTP response open the whole time — POST starts
+// the job and returns a jobId immediately, then we poll a status endpoint for progress/result.
+// `onStatus` gets called on each 'progress' poll, so the UI can show what's happening instead
+// of a static spinner for the whole wait.
+interface ChatJobEnvelope {
+  status: 'progress' | 'success' | 'error'
+  message: string
+  data: { response: string; conversationId: string } | null
+}
+
+function sleep(ms: number): Promise<void> {
+  return new Promise(resolve => setTimeout(resolve, ms))
+}
+
+const CHAT_POLL_INTERVAL_MS = 1500
+
 export async function sendChatMessage(
   message: string,
   conversationId: string | null,
   onStatus?: (status: string) => void
 ): Promise<{ response: string; conversationId: string; sources: ChatSource[] }> {
-  const res = await fetch('/api/chat', {
+  const startRes = await fetch('/api/chat', {
     method: 'POST',
     headers: { 'Content-Type': 'application/json' },
     body: JSON.stringify({ message, conversationId }),
   })
-  if (!res.ok || !res.body) {
-    const body = await res.json().catch(() => ({}))
-    throw new Error(body.message || 'Failed to reach the AI agent')
-  }
+  const startBody = await startRes.json().catch(() => ({}))
+  if (!startRes.ok) throw new Error(startBody.message || 'Failed to reach the AI agent')
+  const jobId: string = startBody.data.jobId
 
-  const reader = res.body.getReader()
-  const decoder = new TextDecoder()
-  let buffer = ''
-  let result: { response: string; conversationId: string } | null = null
-
-  // Each streamed line uses the same {status, message, data} envelope as every other endpoint:
-  // 'progress' lines carry the status text in `message`, the terminal line is either
-  // 'success' (data holds { response, conversationId }) or 'error' (message holds the reason).
   while (true) {
-    const { done, value } = await reader.read()
-    if (done) break
-    buffer += decoder.decode(value, { stream: true })
-    const lines = buffer.split('\n')
-    buffer = lines.pop() ?? ''
-    for (const line of lines) {
-      if (!line.trim()) continue
-      const event = JSON.parse(line)
-      if (event.status === 'progress') onStatus?.(event.message)
-      else if (event.status === 'success') result = { response: event.data.response, conversationId: event.data.conversationId }
-      else if (event.status === 'error') throw new Error(event.message)
+    await sleep(CHAT_POLL_INTERVAL_MS)
+    const statusRes = await fetch(`/api/chat/${jobId}/status`)
+    const job: ChatJobEnvelope = await statusRes.json().catch(() => ({}) as ChatJobEnvelope)
+    if (!statusRes.ok) throw new Error(job.message || 'Failed to reach the AI agent')
+
+    if (job.status === 'progress') {
+      onStatus?.(job.message)
+    } else if (job.status === 'success') {
+      if (!job.data) throw new Error('Chat job succeeded without a response')
+      return { response: job.data.response, conversationId: job.data.conversationId, sources: [] }
+    } else if (job.status === 'error') {
+      throw new Error(job.message)
     }
   }
-
-  if (!result) throw new Error('Connection closed before the agent finished responding')
-  return { ...result, sources: [] }
 }

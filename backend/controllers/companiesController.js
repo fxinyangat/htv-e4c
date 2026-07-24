@@ -104,7 +104,7 @@ export async function createCompany(req, res) {
       }),
     })
     const mapped = mapCompany(createdPage)
-    upsertCachedCompany(mapped)
+    await upsertCachedCompany(mapped)
     sendData(res, mapped, 'Company created', 201)
   } catch (err) {
     sendError(res, err)
@@ -118,12 +118,12 @@ export async function getCompanyById(req, res) {
     // which needs to see live Notion state, not a snapshot that's up to an hour old).
     const wantsFresh = req.query.fresh === '1'
     if (!wantsFresh) {
-      const cached = getCachedCompany(req.params.id)
+      const cached = await getCachedCompany(req.params.id)
       if (cached) return sendData(res, cached)
     }
     const page = await notionFetch(`/pages/${req.params.id}`)
     const mapped = mapCompany(page)
-    upsertCachedCompany(mapped)
+    await upsertCachedCompany(mapped)
     sendData(res, mapped)
   } catch (err) {
     sendError(res, err)
@@ -163,7 +163,7 @@ export async function updateCompany(req, res) {
       body: JSON.stringify({ properties }),
     })
     const mapped = mapCompany(updatedPage)
-    replaceCachedCompany(mapped)
+    await replaceCachedCompany(mapped)
     sendData(res, mapped, 'Company updated')
   } catch (err) {
     sendError(res, err)
@@ -178,7 +178,7 @@ export async function deleteCompany(req, res) {
       method: 'PATCH',
       body: JSON.stringify({ archived: true }),
     })
-    removeCachedCompany(req.params.id)
+    await removeCachedCompany(req.params.id)
     sendData(res, null, 'Company deleted')
   } catch (err) {
     sendError(res, err)

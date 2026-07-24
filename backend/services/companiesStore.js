@@ -1,7 +1,9 @@
+import { randomUUID } from 'crypto'
 import {
   fetchAllPages, NOTION_COMPANIES_DB_ID,
   readTitle, readText, readMultiSelect, readSelect, readUrl,
 } from '../notion.js'
+import { redis } from '../lib/redis.js'
 
 function stripDomain(url) {
   if (!url) return ''
@@ -89,10 +91,75 @@ export function mapCompany(page) {
   }
 }
 
-// Full company list, cached in-memory so an uncapped fetch (spanning every row, currently
-// ~10k) doesn't hit Notion on every page load. A full fetch takes ~60s at this row count, so
-// the cache is warmed on startup and refreshed proactively in the background — requests
-// should never hit a cold cache.
+// --- Redis-backed storage: the source of truth that survives across invocations. ---
+// The full mapped list (~10k rows) is too big for one Redis value, so it's split into
+// byte-bounded chunks rather than a fixed row count (descriptions/tags vary a lot in size).
+const COMPANIES_META_KEY = 'htv:companies:meta'
+const companyChunkKey = i => `htv:companies:chunk:${i}`
+const CHUNK_BYTE_LIMIT = 800 * 1024 // safely under Upstash's ~1MB per-request payload ceiling
+
+function chunkCompaniesByBytes(companies) {
+  const chunks = []
+  let current = []
+  let currentBytes = 2 // account for the enclosing []
+  for (const c of companies) {
+    const size = Buffer.byteLength(JSON.stringify(c), 'utf8') + 1
+    if (current.length > 0 && currentBytes + size > CHUNK_BYTE_LIMIT) {
+      chunks.push(current)
+      current = []
+      currentBytes = 2
+    }
+    current.push(c)
+    currentBytes += size
+  }
+  if (current.length) chunks.push(current)
+  return chunks
+}
+
+async function writeCompaniesToRedis(companies, cached_at) {
+  const chunks = chunkCompaniesByBytes(companies)
+  const prevMeta = await redis.get(COMPANIES_META_KEY)
+  await Promise.all(chunks.map((chunk, i) => redis.set(companyChunkKey(i), chunk)))
+  // Clean up any leftover chunks from a previous write that had more chunks than this one.
+  if (prevMeta?.chunkCount > chunks.length) {
+    await Promise.all(
+      Array.from({ length: prevMeta.chunkCount - chunks.length }, (_, k) => redis.del(companyChunkKey(chunks.length + k)))
+    )
+  }
+  await redis.set(COMPANIES_META_KEY, { chunkCount: chunks.length, cached_at })
+}
+
+async function readCompaniesFromRedis() {
+  const meta = await redis.get(COMPANIES_META_KEY)
+  if (!meta || !meta.chunkCount) return null
+  const chunks = await Promise.all(
+    Array.from({ length: meta.chunkCount }, (_, i) => redis.get(companyChunkKey(i)))
+  )
+  if (chunks.some(c => c == null)) return null // partial/corrupted read — treat as a cache miss
+  return { companies: chunks.flat(), cached_at: meta.cached_at }
+}
+
+// Distributed lock so two cold invocations landing on a stale cache at the same time don't
+// both kick off a redundant ~60s Notion fetch. Scoped short (90s) so a crashed holder doesn't
+// permanently wedge future refreshes.
+const REFRESH_LOCK_KEY = 'htv:companies:refresh-lock'
+const REFRESH_LOCK_TTL_S = 90
+
+async function acquireRefreshLock() {
+  const token = randomUUID()
+  const ok = await redis.set(REFRESH_LOCK_KEY, token, { nx: true, ex: REFRESH_LOCK_TTL_S })
+  return ok ? token : null
+}
+async function releaseRefreshLock(token) {
+  // Only clear it if we still own it — guards against deleting a newer holder's lock in the
+  // rare case ours already expired before we got here.
+  const current = await redis.get(REFRESH_LOCK_KEY)
+  if (current === token) await redis.del(REFRESH_LOCK_KEY)
+}
+
+// Full company list. In-memory copy is a same-process fast path (still useful within one warm
+// invocation); Redis is the cross-invocation source of truth. A full Notion fetch takes ~60s
+// at this row count, so both tiers exist to keep that off the user-facing request path.
 const COMPANIES_TTL_MS = 60 * 60 * 1000 // 1 hour — a manual refresh button covers the "I need this now" case
 // Floor between forced (?refresh=1) fetches, shared across every user/tab — stops someone
 // mashing the Refresh button (or multiple people refreshing at once) from stacking up
@@ -102,14 +169,34 @@ let companiesCache = null
 let companiesCachedAt = 0
 let companiesLoadPromise = null // in-flight fetch, shared so concurrent requests don't double-fetch
 
-function loadCompanies() {
+function isStale(cachedAt, wantsRefresh) {
+  const age = Date.now() - cachedAt
+  return age >= COMPANIES_TTL_MS || (wantsRefresh && age >= MIN_REFRESH_INTERVAL_MS)
+}
+
+function loadCompanies(fallback) {
   if (companiesLoadPromise) return companiesLoadPromise
   companiesLoadPromise = (async () => {
-    const pages = await fetchAllPages(NOTION_COMPANIES_DB_ID)
-    companiesCachedAt = Date.now()
-    const payload = { companies: pages.map(mapCompany), cached_at: companiesCachedAt }
-    companiesCache = payload
-    return payload
+    const lockToken = await acquireRefreshLock()
+    if (!lockToken) {
+      // Another instance is already refreshing — serve what we have rather than double-fetch.
+      const serve = fallback ?? companiesCache ?? { companies: [], cached_at: 0 }
+      companiesCache = serve
+      companiesCachedAt = serve.cached_at
+      return serve
+    }
+    try {
+      const pages = await fetchAllPages(NOTION_COMPANIES_DB_ID)
+      const cached_at = Date.now()
+      const companies = pages.map(mapCompany)
+      const payload = { companies, cached_at }
+      companiesCache = payload
+      companiesCachedAt = cached_at
+      await writeCompaniesToRedis(companies, cached_at)
+      return payload
+    } finally {
+      await releaseRefreshLock(lockToken)
+    }
   })()
   companiesLoadPromise.finally(() => { companiesLoadPromise = null })
   return companiesLoadPromise
@@ -117,44 +204,76 @@ function loadCompanies() {
 
 // Shared by every route that needs the company list — returns the warm cache unless it's
 // stale (TTL expired) or a caller explicitly asked to refresh (subject to its own cooldown).
+// Checks memory, then Redis, before ever falling through to a live Notion fetch.
 export async function getFreshCompanies(wantsRefresh) {
-  const cacheAge = companiesCache ? Date.now() - companiesCachedAt : Infinity
-  const shouldFetch = !companiesCache || cacheAge >= COMPANIES_TTL_MS || (wantsRefresh && cacheAge >= MIN_REFRESH_INTERVAL_MS)
-  if (!shouldFetch) return companiesCache
-  return loadCompanies()
+  if (companiesCache && !isStale(companiesCachedAt, wantsRefresh)) return companiesCache
+
+  const fromRedis = await readCompaniesFromRedis()
+  if (fromRedis && !isStale(fromRedis.cached_at, wantsRefresh)) {
+    companiesCache = fromRedis
+    companiesCachedAt = fromRedis.cached_at
+    return fromRedis
+  }
+
+  return loadCompanies(fromRedis)
 }
 
-// Reads straight from the warm cache without triggering a fetch — used for the single-company
-// lookup's fast path, which falls back to a live Notion read on a miss.
-export function getCachedCompany(id) {
-  return companiesCache?.companies.find(c => c.id === id) ?? null
+async function currentCacheOrEmpty() {
+  if (companiesCache) return companiesCache
+  return (await readCompaniesFromRedis()) ?? { companies: [], cached_at: 0 }
 }
 
-// Inserts a newly-created company, or replaces an existing one in place (by id) — keeps the
-// warm cache consistent with a write instead of waiting on the next TTL refresh.
-export function upsertCachedCompany(company) {
-  if (!companiesCache) return
-  const idx = companiesCache.companies.findIndex(c => c.id === company.id)
-  if (idx !== -1) companiesCache.companies[idx] = company
-  else companiesCache.companies.unshift(company)
+// Reads straight from the warm cache (memory, falling back to Redis) without triggering a
+// Notion fetch — used for the single-company lookup's fast path, which falls back to a live
+// Notion read on a genuine miss.
+export async function getCachedCompany(id) {
+  const base = await currentCacheOrEmpty()
+  return base.companies.find(c => c.id === id) ?? null
+}
+
+// Inserts a newly-created company, or replaces an existing one in place (by id) — keeps both
+// cache tiers consistent with a write instead of waiting on the next TTL refresh.
+export async function upsertCachedCompany(company) {
+  const base = await currentCacheOrEmpty()
+  const idx = base.companies.findIndex(c => c.id === company.id)
+  const companies = idx !== -1
+    ? base.companies.map((c, i) => (i === idx ? company : c))
+    : [company, ...base.companies]
+  const payload = { companies, cached_at: base.cached_at }
+  companiesCache = payload
+  companiesCachedAt = payload.cached_at
+  await writeCompaniesToRedis(companies, payload.cached_at)
 }
 
 // Replaces an existing cache entry in place only — never inserts. Used after an edit, where
-// a cache miss means the row fell out of the warm cache entirely and isn't worth re-adding
-// out of update-order (the next TTL refresh will pick it back up naturally).
-export function replaceCachedCompany(company) {
-  if (!companiesCache) return
-  const idx = companiesCache.companies.findIndex(c => c.id === company.id)
-  if (idx !== -1) companiesCache.companies[idx] = company
+// a cache miss means the row fell out of the cache entirely and isn't worth re-adding out of
+// update-order (the next TTL refresh will pick it back up naturally).
+export async function replaceCachedCompany(company) {
+  const base = await currentCacheOrEmpty()
+  const idx = base.companies.findIndex(c => c.id === company.id)
+  if (idx === -1) return
+  const companies = base.companies.map((c, i) => (i === idx ? company : c))
+  const payload = { companies, cached_at: base.cached_at }
+  companiesCache = payload
+  companiesCachedAt = payload.cached_at
+  await writeCompaniesToRedis(companies, payload.cached_at)
 }
 
-export function removeCachedCompany(id) {
-  if (!companiesCache) return
-  companiesCache.companies = companiesCache.companies.filter(c => c.id !== id)
+export async function removeCachedCompany(id) {
+  const base = await currentCacheOrEmpty()
+  if (!base.companies.some(c => c.id === id)) return
+  const companies = base.companies.filter(c => c.id !== id)
+  const payload = { companies, cached_at: base.cached_at }
+  companiesCache = payload
+  companiesCachedAt = payload.cached_at
+  await writeCompaniesToRedis(companies, payload.cached_at)
 }
 
-// Warms the companies cache immediately, then keeps refreshing it before the TTL expires so
-// the ~60s Notion fetch never happens on a user-facing request.
+// Local dev only (see server.js's !process.env.VERCEL guard) — warms the companies cache
+// immediately, then keeps refreshing it before the TTL expires so the ~60s Notion fetch never
+// happens on a user-facing request. Not meaningful on Vercel: a background timer isn't
+// guaranteed to keep running between invocations, which is exactly why Redis is now the
+// cross-invocation source of truth instead.
 export function warmCompaniesCache() {
   loadCompanies().catch(err => console.error('Failed to warm companies cache:', err.message))
   setInterval(() => {
