@@ -1,0 +1,163 @@
+import {
+  fetchAllPages, NOTION_COMPANIES_DB_ID,
+  readTitle, readText, readMultiSelect, readSelect, readUrl,
+} from '../notion.js'
+
+function stripDomain(url) {
+  if (!url) return ''
+  return url.replace(/^https?:\/\//, '').replace(/\/$/, '')
+}
+
+// Agent writes JSON like { "Industry": "why NA/Out Of Scope", "Stage": "...", "Product": "...",
+// "Technology": "...", "Region": "...", "Action": "single most important fix" } into the
+// "Tagging Comment" rich_text property. Only keys with filler values are present.
+function parseTaggingComment(raw) {
+  const text = (raw || '').trim()
+  if (!text) return { tagging_comment: [], tagging_action: null }
+  try {
+    const obj = JSON.parse(text)
+    const tagging_action = typeof obj.Action === 'string' ? obj.Action : null
+    const tagging_comment = Object.entries(obj)
+      .filter(([key]) => key !== 'Action')
+      .map(([label, note]) => ({ label, note: String(note) }))
+    return { tagging_comment, tagging_action }
+  } catch {
+    // Agent wrote non-JSON text — surface it as a single note rather than dropping it.
+    return { tagging_comment: [{ label: 'Note', note: text }], tagging_action: null }
+  }
+}
+
+let nextTagId = 1
+
+// Flatten a raw Notion page fitting thw frontend type expects.
+export function mapCompany(page) {
+  const p = page.properties
+
+  const industry = readMultiSelect(p['Industry (HVC)'])
+  const constructionStage = readMultiSelect(p['Construction Stage (HVC)'])
+  const productType = readMultiSelect(p['Product Type (HVC)'])
+  const technologyType = readMultiSelect(p['Technology Type (HVC)'])
+  const region = readMultiSelect(p['Region (HTV)'])
+  const originCategory = readMultiSelect(p['Origin Category (HVC)'])
+  const diversity = readMultiSelect(p['Diversity Status'])
+
+  const taggedBy = readSelect(p['Tagged By']) || 'NA'
+  const tagSource = taggedBy === 'Human' ? 'human' : taggedBy === 'AI Agent' ? 'llm' : 'human'
+  const { tagging_comment, tagging_action } = parseTaggingComment(readText(p['Tagging Comment']))
+
+  const tags = []
+  const axes = [
+    ['industry', industry],
+    ['construction_stage', constructionStage],
+    ['product_type', productType],
+    ['technology_type', technologyType],
+  ]
+  for (const [axis, values] of axes) {
+    for (const value of values) {
+      tags.push({
+        id: String(nextTagId++),
+        axis, value, source: tagSource,
+        confidence: 1, is_accepted: true, reasoning: null,
+      })
+    }
+  }
+
+  return {
+    id: page.id,
+    external_id: `HV-${page.id.slice(0, 8)}`,
+    name: readTitle(p['Name']),
+    description: readText(p['Description']),
+    priority: 'review',
+    updated_at: (page.last_edited_time || '').slice(0, 10),
+    created_at: (page.created_time || '').slice(0, 10),
+    domain: stripDomain(readUrl(p['Domain'])),
+    location: readText(p['Location']),
+    region,
+    diversity_status: diversity[0] || null,
+    diversity_statuses: diversity, // full multi-select — needed for Inbound Stats combo buckets (e.g. "Female & BIPOC Founder")
+    linkedin_url: readUrl(p['LinkedIn URL']),
+    origin_source: readUrl(p['Origin Source']) || '',
+    origin_category: originCategory[0] || null,
+    allie_knockout: readSelect(p['Allie Knockout Pass/Fail']),
+    andra_knockout: readSelect(p['Andra Knockout Pass/Fail']),
+    tagged_by: taggedBy,
+    tags,
+    activity: [],
+    notes: [],
+    tagging_comment,
+    tagging_action,
+  }
+}
+
+// Full company list, cached in-memory so an uncapped fetch (spanning every row, currently
+// ~10k) doesn't hit Notion on every page load. A full fetch takes ~60s at this row count, so
+// the cache is warmed on startup and refreshed proactively in the background — requests
+// should never hit a cold cache.
+const COMPANIES_TTL_MS = 60 * 60 * 1000 // 1 hour — a manual refresh button covers the "I need this now" case
+// Floor between forced (?refresh=1) fetches, shared across every user/tab — stops someone
+// mashing the Refresh button (or multiple people refreshing at once) from stacking up
+// several ~60s Notion pulls at the same time.
+const MIN_REFRESH_INTERVAL_MS = 60 * 1000
+let companiesCache = null
+let companiesCachedAt = 0
+let companiesLoadPromise = null // in-flight fetch, shared so concurrent requests don't double-fetch
+
+function loadCompanies() {
+  if (companiesLoadPromise) return companiesLoadPromise
+  companiesLoadPromise = (async () => {
+    const pages = await fetchAllPages(NOTION_COMPANIES_DB_ID)
+    companiesCachedAt = Date.now()
+    const payload = { companies: pages.map(mapCompany), cached_at: companiesCachedAt }
+    companiesCache = payload
+    return payload
+  })()
+  companiesLoadPromise.finally(() => { companiesLoadPromise = null })
+  return companiesLoadPromise
+}
+
+// Shared by every route that needs the company list — returns the warm cache unless it's
+// stale (TTL expired) or a caller explicitly asked to refresh (subject to its own cooldown).
+export async function getFreshCompanies(wantsRefresh) {
+  const cacheAge = companiesCache ? Date.now() - companiesCachedAt : Infinity
+  const shouldFetch = !companiesCache || cacheAge >= COMPANIES_TTL_MS || (wantsRefresh && cacheAge >= MIN_REFRESH_INTERVAL_MS)
+  if (!shouldFetch) return companiesCache
+  return loadCompanies()
+}
+
+// Reads straight from the warm cache without triggering a fetch — used for the single-company
+// lookup's fast path, which falls back to a live Notion read on a miss.
+export function getCachedCompany(id) {
+  return companiesCache?.companies.find(c => c.id === id) ?? null
+}
+
+// Inserts a newly-created company, or replaces an existing one in place (by id) — keeps the
+// warm cache consistent with a write instead of waiting on the next TTL refresh.
+export function upsertCachedCompany(company) {
+  if (!companiesCache) return
+  const idx = companiesCache.companies.findIndex(c => c.id === company.id)
+  if (idx !== -1) companiesCache.companies[idx] = company
+  else companiesCache.companies.unshift(company)
+}
+
+// Replaces an existing cache entry in place only — never inserts. Used after an edit, where
+// a cache miss means the row fell out of the warm cache entirely and isn't worth re-adding
+// out of update-order (the next TTL refresh will pick it back up naturally).
+export function replaceCachedCompany(company) {
+  if (!companiesCache) return
+  const idx = companiesCache.companies.findIndex(c => c.id === company.id)
+  if (idx !== -1) companiesCache.companies[idx] = company
+}
+
+export function removeCachedCompany(id) {
+  if (!companiesCache) return
+  companiesCache.companies = companiesCache.companies.filter(c => c.id !== id)
+}
+
+// Warms the companies cache immediately, then keeps refreshing it before the TTL expires so
+// the ~60s Notion fetch never happens on a user-facing request.
+export function warmCompaniesCache() {
+  loadCompanies().catch(err => console.error('Failed to warm companies cache:', err.message))
+  setInterval(() => {
+    loadCompanies().catch(err => console.error('Failed to refresh companies cache:', err.message))
+  }, COMPANIES_TTL_MS)
+}
