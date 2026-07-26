@@ -18,7 +18,7 @@ export function RequireAuth() {
   const { user, isLoading } = useAuthContext()
 
   if (isLoading) return <FullPageSpinner />
-  if (!user) return <Navigate to="/login" replace />
+  if (!user) return <Navigate to="/login?auth=required" replace />
   return <Outlet />
 }
 

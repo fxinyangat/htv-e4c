@@ -1,5 +1,5 @@
 import { useSearchParams } from 'react-router-dom'
-import { Sparkles, Clock, AlertCircle } from 'lucide-react'
+import { Sparkles, Clock, AlertCircle, LogIn } from 'lucide-react'
 import DarkBackdrop from '../components/DarkBackdrop'
 
 function GoogleIcon() {
@@ -17,6 +17,7 @@ export default function Login() {
   const [searchParams] = useSearchParams()
   const isPending = searchParams.get('pending') === '1'
   const error = searchParams.get('error')
+  const authRequired = searchParams.get('auth') === 'required'
 
   function handleGoogleSignIn() {
     window.location.href = '/api/auth/google'
@@ -41,6 +42,15 @@ export default function Login() {
         <div className="w-full max-w-md bg-white/5 backdrop-blur-xl border border-white/10 rounded-3xl shadow-2xl p-8">
           <h1 className="text-2xl font-display font-bold text-white">Welcome back</h1>
           <p className="text-sm text-white/50 mt-1 mb-6">Sign in to your Hometeam account</p>
+
+          {authRequired && !isPending && !error && (
+            <div className="flex items-start gap-3 bg-white/5 border border-white/10 rounded-xl px-4 py-3 mb-5">
+              <LogIn className="w-4 h-4 text-white/50 mt-0.5 shrink-0" />
+              <p className="text-sm text-white/70">
+                Sign in required to view that page.
+              </p>
+            </div>
+          )}
 
           {isPending && (
             <div className="flex items-start gap-3 bg-amber-400/10 border border-amber-400/20 rounded-xl px-4 py-3 mb-5">

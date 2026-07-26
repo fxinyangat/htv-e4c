@@ -5,6 +5,7 @@ import Queue from './pages/Queue'
 import Companies from './pages/Companies'
 import Metrics from './pages/Metrics'
 import InboundStats from './pages/InboundStats'
+import NotFound from './pages/NotFound'
 import AppLayout from './components/AppLayout'
 import ChatWidget from './components/ChatWidget'
 import { RequireAuth, RequireRole } from './components/RequireAuth'
@@ -34,6 +35,7 @@ export default function App() {
                   </Route>
                 </Route>
               </Route>
+              <Route path="*" element={<NotFound />} />
             </Routes>
             {/* Mounted globally (not just inside AppLayout) so it's reachable from Landing without
                 navigating into the internal app — hidden only on /login. */}
