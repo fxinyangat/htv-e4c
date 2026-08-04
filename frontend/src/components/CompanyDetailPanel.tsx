@@ -1,5 +1,6 @@
 import { useState, ReactNode } from 'react'
-import { X, MoreVertical, Pencil, Trash2, ExternalLink, Bot, UserRound, HelpCircle, CheckCircle2, AlertTriangle, XCircle, PlusCircle, Sparkles, Send, Bell, CalendarClock } from 'lucide-react'
+import { useNavigate } from 'react-router-dom'
+import { X, MoreVertical, Pencil, Trash2, ListChecks, ExternalLink, Bot, UserRound, HelpCircle, CheckCircle2, AlertTriangle, XCircle, PlusCircle, Sparkles, Send, Bell, CalendarClock } from 'lucide-react'
 import { Company, ActivityType, ScoreBand, computeScore, deleteCompany, deleteRealCompany, addNote, deleteNote, isRealCompanyId } from '../api'
 import EditCompanyModal from './EditCompanyModal'
 import ConfirmDeleteModal from './ConfirmDeleteModal'
@@ -97,6 +98,7 @@ interface Props {
 
 export default function CompanyDetailPanel({ company, onClose, onDeleted, onUpdated }: Props) {
   const { showToast } = useToast()
+  const navigate = useNavigate()
   const [tab, setTab] = useState<'details' | 'activity' | 'notes'>('details')
   const [menuOpen, setMenuOpen] = useState(false)
   const [editing, setEditing] = useState(false)
@@ -189,6 +191,12 @@ export default function CompanyDetailPanel({ company, onClose, onDeleted, onUpda
                 onMouseLeave={() => setMenuOpen(false)}
                 className="absolute right-0 mt-2 w-40 bg-white rounded-xl shadow-lg border border-ht-blue/10 overflow-hidden z-10"
               >
+                <button
+                  onClick={() => { setMenuOpen(false); navigate(`/queue?id=${company.id}`) }}
+                  className="w-full text-left px-4 py-2.5 text-sm text-ht-blue hover:bg-ht-blue/5 flex items-center gap-2"
+                >
+                  <ListChecks className="w-3.5 h-3.5" /> Manage Tags
+                </button>
                 <button
                   onClick={() => { setMenuOpen(false); setEditing(true) }}
                   className="w-full text-left px-4 py-2.5 text-sm text-ht-blue hover:bg-ht-blue/5 flex items-center gap-2"

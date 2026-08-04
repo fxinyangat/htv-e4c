@@ -46,7 +46,7 @@ export default function Login() {
           {authRequired && !isPending && !error && (
             <div className="flex items-start gap-3 bg-white/5 border border-white/10 rounded-xl px-4 py-3 mb-5">
               <LogIn className="w-4 h-4 text-white/50 mt-0.5 shrink-0" />
-              <p className="text-sm text-white/70">
+              <p className="text-sm text-red-400">
                 Sign in required to view that page.
               </p>
             </div>

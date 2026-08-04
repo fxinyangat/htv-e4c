@@ -1,4 +1,5 @@
 import { useEffect, useState } from 'react'
+import { Link, useSearchParams } from 'react-router-dom'
 import {
   Search, X, PartyPopper, Loader2, ChevronDown, CheckCircle2, AlertTriangle, XCircle, Bot, UserRound, HelpCircle, RefreshCw,
 } from 'lucide-react'
@@ -276,7 +277,15 @@ function QueueRow({
     <div className={`bg-white rounded-2xl border shadow-sm transition-all overflow-hidden ${expanded ? 'border-l-4 border-l-ht-orange border-ht-blue/10' : 'border-ht-blue/10 hover:border-ht-blue/20 hover:shadow-md'}`}>
       <div onClick={onToggle} className="p-6 flex items-center justify-between gap-6 cursor-pointer">
         <div className="min-w-0 flex-1">
-          <h3 className="font-display font-semibold text-ht-blue text-base">{item.name}</h3>
+          <h3 className="font-display font-semibold text-ht-blue text-base">
+            <Link
+              to={`/companies?id=${item.id}`}
+              onClick={e => e.stopPropagation()}
+              className="hover:text-ht-orange transition-colors"
+            >
+              {item.name}
+            </Link>
+          </h3>
           <p className={`text-sm text-ht-blue/60 mt-1 ${expanded ? '' : 'line-clamp-1'}`}>
             {item.description.trim() || <span className="italic text-ht-blue/30">No company description</span>}
           </p>
@@ -336,6 +345,7 @@ function QueueRow({
 export default function Queue() {
   const { taxonomy } = useTaxonomy()
   const { showToast } = useToast()
+  const [searchParams] = useSearchParams()
   const [items, setItems] = useState<QueueListItem[]>([])
   const [total, setTotal] = useState(0)
   const [page, setPage] = useState(1)
@@ -352,6 +362,23 @@ export default function Queue() {
   )
 
   const filterKey = JSON.stringify(filters)
+
+  // Deep-link from CompanyDetailPanel's "Manage Tags" (and anywhere else linking to
+  // /queue?id=<uuid>) — the target company might be Human-reviewed (excluded from the default
+  // Untagged + AI Tagged filter) or off the current page, so rather than searching the existing
+  // filtered/paginated snapshot for it, clear filters and search by its external_id (unique per
+  // company) so it's guaranteed to surface, then auto-expand it once it loads.
+  useEffect(() => {
+    const id = searchParams.get('id')
+    if (!id) return
+    fetchCompany(id).then(c => {
+      setFilters({})
+      setSearchInput(c.external_id)
+      setSearch(c.external_id)
+      setExpandedId(id)
+    }).catch(() => {})
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [])
 
   async function load(p = page) {
     setLoading(true)
