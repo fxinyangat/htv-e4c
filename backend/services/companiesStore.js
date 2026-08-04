@@ -234,7 +234,15 @@ function loadCompanies(fallback) {
       const payload = { companies, cached_at }
       companiesCache = payload
       companiesCachedAt = cached_at
-      await writeCompaniesToRedis(companies, cached_at)
+      // Through the same write lock as upsert/replace/remove — without this, a webhook or a
+      // tag-approval PATCH landing mid-refresh (this pull alone takes 60s+, a wide window) can
+      // write to the same Redis chunk keys concurrently. Since chunk boundaries depend on the
+      // exact byte layout of the whole list, two racing writers don't chunk data the same way —
+      // an interleaved result can mix incompatible chunk sets and corrupt fields (like name) on
+      // whichever companies land in the overlap. acquireRefreshLock (above) is a different,
+      // narrower concern — it only stops redundant ~60s Notion pulls from stacking up; it says
+      // nothing about write safety once a pull has actually completed.
+      await withCompaniesWriteLock(() => writeCompaniesToRedis(companies, cached_at))
       return payload
     } finally {
       await releaseRefreshLock(lockToken)
