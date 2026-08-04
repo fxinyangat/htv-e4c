@@ -12,13 +12,14 @@ import ConfirmDeleteModal from '../components/ConfirmDeleteModal'
 import FilterSidebar from '../components/FilterSidebar'
 import { isValidDomain, normalizeDomain } from '../utils/validation'
 
-// Stopgap until Notion webhooks + push replace this entirely (needs a real deployment first —
-// see project notes). Two-phase backoff so we don't hammer the API for an hour+ at 60s cadence:
-// check every 60s for the first 10 min, then every 5 min for up to 1 more hour, then give up.
-const TAGGING_TICK_MS = 60 * 1000 // heartbeat — the coarsest interval we ever check at
-const TAGGING_FAST_WINDOW_MS = 10 * 60 * 1000 // first 10 min: check every tick (60s)
-const TAGGING_SLOW_INTERVAL_MS = 5 * 60 * 1000 // after that: check every 5 min
-const TAGGING_TOTAL_TIMEOUT_MS = 70 * 60 * 1000 // give up entirely after 70 min total
+// A Notion webhook (backend/routes/webhooks.js) keeps the backend's cache fresh the instant the
+// AI agent finishes tagging a company, instead of waiting on that cache's 1-hour TTL — so this
+// only needs to cheaply ask "what does the cache say now" on a short, flat interval, not the old
+// two-phase live-Notion backoff (that called fetchCompany(id, true), a rate-limited external
+// call per check). No more force=true: bypassing the cache would defeat the point of the webhook.
+const TAGGING_POLL_MS = 7 * 1000 // cheap cache read — safe to check often
+const TAGGING_TOTAL_TIMEOUT_MS = 12 * 60 * 1000 // safety net for the rare missed webhook event
+const TAGGING_SLOW_WARNING_MS = 6 * 60 * 1000 // past this, flag it as unusually long rather than just "Tagging…"
 
 const PRIORITY_BADGE: Record<Priority, { label: string; cls: string; icon: typeof ShieldCheck }> = {
   high: { label: 'High', cls: 'bg-emerald-50 text-emerald-700 ring-emerald-600/20', icon: ShieldCheck },
@@ -39,8 +40,8 @@ function formatDate(iso: string) {
   return new Date(iso).toLocaleDateString('en-US', { month: 'short', day: 'numeric', year: 'numeric' })
 }
 
-function taggingChip(entry: { startedAt: number; lastCheckedAt: number }) {
-  const label = Date.now() - entry.startedAt >= TAGGING_FAST_WINDOW_MS ? 'Tagging is taking unusually long…' : 'Tagging…'
+function taggingChip(entry: { startedAt: number }) {
+  const label = Date.now() - entry.startedAt >= TAGGING_SLOW_WARNING_MS ? 'Tagging is taking unusually long…' : 'Tagging…'
   return (
     <span className="px-2.5 py-1 text-xs font-medium rounded-full bg-ht-blue/5 text-ht-blue/50 animate-pulse ring-1 ring-inset ring-ht-blue/10 text-right">
       {label}
@@ -100,8 +101,9 @@ export default function Companies() {
   const [searchParams, setSearchParams] = useSearchParams()
   const { setContext } = useChatContext()
   const [showAdd, setShowAdd] = useState(false)
-  // id -> when polling started + when it was last actually checked (drives the two-phase backoff)
-  const [taggingIds, setTaggingIds] = useState<Map<string, { startedAt: number; lastCheckedAt: number }>>(new Map())
+  // id -> when polling started (bounds the safety-net timeout; the webhook is what actually
+  // drives freshness now, this is just how long to keep the "Tagging…" chip up as a fallback)
+  const [taggingIds, setTaggingIds] = useState<Map<string, { startedAt: number }>>(new Map())
   const [expandedCats, setExpandedCats] = useState<Record<string, boolean>>(
     Object.keys(taxonomy).reduce((acc, key) => ({ ...acc, [key]: false }), { tagged_by: false })
   )
@@ -188,42 +190,35 @@ export default function Companies() {
       const timedOut: string[] = []
 
       for (const [id, entry] of taggingIds) {
-        const elapsed = now - entry.startedAt
-        if (elapsed >= TAGGING_TOTAL_TIMEOUT_MS) {
-          timedOut.push(id)
-          continue
-        }
-        const phaseInterval = elapsed < TAGGING_FAST_WINDOW_MS ? TAGGING_TICK_MS : TAGGING_SLOW_INTERVAL_MS
-        if (now - entry.lastCheckedAt >= phaseInterval) toCheck.push(id)
+        if (now - entry.startedAt >= TAGGING_TOTAL_TIMEOUT_MS) timedOut.push(id)
+        else toCheck.push(id)
       }
 
       if (toCheck.length === 0 && timedOut.length === 0) return
 
+      // No force=true — the whole point of the webhook is that the cache is already fresh the
+      // instant Notion tagging completes, so a plain (cheap, cached) read is enough. Every
+      // pending id gets checked every tick now, since that's no longer the expensive/rate-limited
+      // operation the old two-phase backoff was built to ration.
       const tagged: string[] = []
-      const stillPending: string[] = []
       await Promise.all(toCheck.map(async id => {
-        const company = await fetchCompany(id, true)
+        const company = await fetchCompany(id)
         if (company.tags.length > 0) tagged.push(id)
-        else stillPending.push(id)
       }))
 
       setTaggingIds(prev => {
         const next = new Map(prev)
         tagged.forEach(id => next.delete(id))
         timedOut.forEach(id => next.delete(id))
-        stillPending.forEach(id => {
-          const entry = next.get(id)
-          if (entry) next.set(id, { ...entry, lastCheckedAt: now })
-        })
         return next
       })
       if (timedOut.length > 0) {
-        showToast('info', 'Tagging timed out', 'No tags arrived after 70 minutes — marked as untagged for now.')
+        showToast('info', 'Tagging timed out', 'No tags arrived after 12 minutes — marked as untagged for now.')
       }
       if (tagged.length > 0 || timedOut.length > 0) {
         loadRef.current?.(undefined, true)
       }
-    }, TAGGING_TICK_MS)
+    }, TAGGING_POLL_MS)
     return () => clearInterval(interval)
   }, [taggingIds])
 
@@ -497,7 +492,7 @@ export default function Companies() {
       )}
 
       {/* add company modal */}
-      {showAdd && <AddCompanyModal onClose={() => setShowAdd(false)} onAdded={(id) => { setShowAdd(false); setTaggingIds(prev => new Map(prev).set(id, { startedAt: Date.now(), lastCheckedAt: 0 })); load(page, true) }} />}
+      {showAdd && <AddCompanyModal onClose={() => setShowAdd(false)} onAdded={(id) => { setShowAdd(false); setTaggingIds(prev => new Map(prev).set(id, { startedAt: Date.now() })); load(page, true) }} />}
     </div>
   )
 }

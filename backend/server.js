@@ -7,6 +7,7 @@ import statsRouter from './routes/stats.js'
 import chatRouter from './routes/chat.js'
 import taxonomyRouter from './routes/taxonomy.js'
 import healthRouter from './routes/health.js'
+import webhooksRouter from './routes/webhooks.js'
 import { warmCompaniesCache } from './services/companiesStore.js'
 import { requireAuth } from './middleware/requireAuth.js'
 import { requireRole } from './middleware/requireRole.js'
@@ -37,6 +38,7 @@ app.use(cookieParser())
 // wherever requireAuth is, even to routers that also serve GET requests.
 app.use('/api/auth', authRouter) // public entry points; requireAuth/requireOrigin applied per-route inside auth.js
 app.use('/api/healthz', healthRouter) // public
+app.use('/api/webhooks', webhooksRouter) // public — Notion isn't a logged-in browser; authenticity comes from a shared-secret header, not cookies/CORS
 app.use('/api/chat', requireAuth, requireOrigin, chatRouter) // any approved role — Admin/Analyst/Investor all get chat
 app.use('/api/companies', requireAuth, requireOrigin, requireRole('Admin', 'Analyst'), companiesRouter)
 app.use('/api/taxonomy', requireAuth, taxonomyRouter) // any approved role

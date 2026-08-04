@@ -4,7 +4,7 @@ import {
   toTitle, toEmail, toRichText, toSelect,
 } from '../notion.js'
 
-function mapUser(page) {
+export function mapUser(page) {
   const p = page.properties
   return {
     id: page.id,
@@ -70,4 +70,13 @@ export async function createPendingUser({ sub, name, email, picture }) {
   const user = mapUser(createdPage)
   if (usersCache) usersCache = [user, ...usersCache]
   return user
+}
+
+// Called by the Notion webhook handler when a Users-database page changes — keeps a Role/Status
+// edit made directly in Notion from waiting out the 30s cache TTL before it takes effect.
+export function upsertCachedUser(user) {
+  if (!usersCache) return
+  const idx = usersCache.findIndex(u => u.id === user.id)
+  if (idx !== -1) usersCache[idx] = user
+  else usersCache = [user, ...usersCache]
 }
