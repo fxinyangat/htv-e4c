@@ -157,6 +157,48 @@ async function releaseRefreshLock(token) {
   if (current === token) await redis.del(REFRESH_LOCK_KEY)
 }
 
+// Serializes every read-modify-write against the cached company list (upsert/replace/remove all
+// read the full list, change one entry, and rewrite the full list back to Redis). Without this,
+// two of those happening concurrently on different invocations — e.g. our own POST /api/companies
+// caching a fresh company, and moments later a Notion webhook firing because Dust's tagging
+// automation just wrote to that same page — can race: each reads its own snapshot before the
+// other's write has landed, and whichever writes back last silently discards the other's change.
+// Unlike acquireRefreshLock (which skips the caller entirely on contention — fine, since a
+// refresh is redundant if someone else is already doing one), a write must still happen, so this
+// blocks with a short retry loop instead of failing fast.
+const WRITE_LOCK_KEY = 'htv:companies:write-lock'
+const WRITE_LOCK_TTL_S = 30 // bounded so a crashed holder can't wedge writes forever
+const WRITE_LOCK_MAX_WAIT_MS = 10 * 1000
+const WRITE_LOCK_RETRY_MS = 150
+
+async function acquireWriteLock() {
+  const token = randomUUID()
+  const deadline = Date.now() + WRITE_LOCK_MAX_WAIT_MS
+  while (Date.now() < deadline) {
+    const ok = await redis.set(WRITE_LOCK_KEY, token, { nx: true, ex: WRITE_LOCK_TTL_S })
+    if (ok) return token
+    await new Promise(r => setTimeout(r, WRITE_LOCK_RETRY_MS))
+  }
+  return null
+}
+async function releaseWriteLock(token) {
+  const current = await redis.get(WRITE_LOCK_KEY)
+  if (current === token) await redis.del(WRITE_LOCK_KEY)
+}
+
+// Runs fn() holding the write lock. On the rare case the lock can't be acquired within the wait
+// window (e.g. a holder is stuck), proceeds anyway rather than failing the caller's request —
+// degraded safety for that one write beats hanging or erroring out entirely.
+async function withCompaniesWriteLock(fn) {
+  const token = await acquireWriteLock()
+  if (!token) console.warn('Could not acquire companies write lock in time — proceeding unlocked')
+  try {
+    return await fn()
+  } finally {
+    if (token) await releaseWriteLock(token)
+  }
+}
+
 // Full company list. In-memory copy is a same-process fast path (still useful within one warm
 // invocation); Redis is the cross-invocation source of truth. A full Notion fetch takes ~60s
 // at this row count, so both tiers exist to keep that off the user-facing request path.
@@ -232,41 +274,49 @@ export async function getCachedCompany(id) {
 }
 
 // Inserts a newly-created company, or replaces an existing one in place (by id) — keeps both
-// cache tiers consistent with a write instead of waiting on the next TTL refresh.
+// cache tiers consistent with a write instead of waiting on the next TTL refresh. Wrapped in the
+// write lock so a concurrent upsert/replace/remove elsewhere can't race this one (see
+// withCompaniesWriteLock's comment for why that matters).
 export async function upsertCachedCompany(company) {
-  const base = await currentCacheOrEmpty()
-  const idx = base.companies.findIndex(c => c.id === company.id)
-  const companies = idx !== -1
-    ? base.companies.map((c, i) => (i === idx ? company : c))
-    : [company, ...base.companies]
-  const payload = { companies, cached_at: base.cached_at }
-  companiesCache = payload
-  companiesCachedAt = payload.cached_at
-  await writeCompaniesToRedis(companies, payload.cached_at)
+  return withCompaniesWriteLock(async () => {
+    const base = await currentCacheOrEmpty()
+    const idx = base.companies.findIndex(c => c.id === company.id)
+    const companies = idx !== -1
+      ? base.companies.map((c, i) => (i === idx ? company : c))
+      : [company, ...base.companies]
+    const payload = { companies, cached_at: base.cached_at }
+    companiesCache = payload
+    companiesCachedAt = payload.cached_at
+    await writeCompaniesToRedis(companies, payload.cached_at)
+  })
 }
 
 // Replaces an existing cache entry in place only — never inserts. Used after an edit, where
 // a cache miss means the row fell out of the cache entirely and isn't worth re-adding out of
 // update-order (the next TTL refresh will pick it back up naturally).
 export async function replaceCachedCompany(company) {
-  const base = await currentCacheOrEmpty()
-  const idx = base.companies.findIndex(c => c.id === company.id)
-  if (idx === -1) return
-  const companies = base.companies.map((c, i) => (i === idx ? company : c))
-  const payload = { companies, cached_at: base.cached_at }
-  companiesCache = payload
-  companiesCachedAt = payload.cached_at
-  await writeCompaniesToRedis(companies, payload.cached_at)
+  return withCompaniesWriteLock(async () => {
+    const base = await currentCacheOrEmpty()
+    const idx = base.companies.findIndex(c => c.id === company.id)
+    if (idx === -1) return
+    const companies = base.companies.map((c, i) => (i === idx ? company : c))
+    const payload = { companies, cached_at: base.cached_at }
+    companiesCache = payload
+    companiesCachedAt = payload.cached_at
+    await writeCompaniesToRedis(companies, payload.cached_at)
+  })
 }
 
 export async function removeCachedCompany(id) {
-  const base = await currentCacheOrEmpty()
-  if (!base.companies.some(c => c.id === id)) return
-  const companies = base.companies.filter(c => c.id !== id)
-  const payload = { companies, cached_at: base.cached_at }
-  companiesCache = payload
-  companiesCachedAt = payload.cached_at
-  await writeCompaniesToRedis(companies, payload.cached_at)
+  return withCompaniesWriteLock(async () => {
+    const base = await currentCacheOrEmpty()
+    if (!base.companies.some(c => c.id === id)) return
+    const companies = base.companies.filter(c => c.id !== id)
+    const payload = { companies, cached_at: base.cached_at }
+    companiesCache = payload
+    companiesCachedAt = payload.cached_at
+    await writeCompaniesToRedis(companies, payload.cached_at)
+  })
 }
 
 // Local dev only (see server.js's !process.env.VERCEL guard) — warms the companies cache
