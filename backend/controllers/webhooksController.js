@@ -30,6 +30,25 @@ export async function handleNotionWebhook(req, res) {
   const page = req.body?.data
   if (!page || page.object !== 'page') return
 
+  // Diagnostic logging — a company's Name/Domain has been observed going empty in the cache
+  // after a webhook-triggered write, even with concurrent-write races ruled out (the write lock
+  // serializes every cache mutation). That points at some webhook payloads not actually
+  // containing Name/Domain, contradicting what "Select all existing properties" produced in
+  // earlier manual tests. Logging every delivery's automation_id and whether Name/Domain are
+  // present gives direct evidence on the next occurrence instead of another guess.
+  const nameProp = page.properties?.['Name']
+  const domainProp = page.properties?.['Domain']
+  console.log('=== Notion webhook: page event ===', JSON.stringify({
+    automation_id: req.body?.source?.automation_id,
+    event_id: req.body?.source?.event_id,
+    page_id: page.id,
+    property_count: page.properties ? Object.keys(page.properties).length : 0,
+    has_name_property: 'Name' in (page.properties || {}),
+    name_title_text: nameProp?.title?.[0]?.plain_text ?? null,
+    has_domain_property: 'Domain' in (page.properties || {}),
+    domain_url: domainProp?.url ?? null,
+  }))
+
   runInBackground((async () => {
     const databaseId = page.parent?.database_id
     if (databaseId === NOTION_COMPANIES_DB_ID) {
