@@ -1,4 +1,4 @@
-import { NOTION_COMPANIES_DB_ID, NOTION_USERS_DB_ID } from '../notion.js'
+import { notionFetch, NOTION_COMPANIES_DB_ID, NOTION_USERS_DB_ID } from '../notion.js'
 import { verifyWebhookSecret } from '../lib/notionWebhookAuth.js'
 import { runInBackground } from '../lib/background.js'
 import { mapCompany, upsertCachedCompany } from '../services/companiesStore.js'
@@ -10,46 +10,30 @@ import { mapUser, upsertCachedUser } from '../services/usersStore.js'
 // secret we generate ourselves, checked against a custom header added when configuring the
 // automation (X-Webhook-Secret).
 //
-// Captured live (see AUTHENTICATION.md-style project notes): with "Select all existing
-// properties" enabled on the automation's webhook content, the payload's `data` field is
-// already a complete Notion page object — same shape as GET /pages/:id (id, properties,
-// parent.database_id, last_edited_time, created_time all present) — so mapCompany/mapUser can
-// consume it directly with no extra Notion API round-trip.
+// The payload's `data` is NOT trustworthy as a complete page, even with "Select all existing
+// properties" enabled on the automation's content config — confirmed live: a real delivery
+// arrived with only 4 properties (missing Name and Domain entirely), which then got written
+// straight into the cache, blanking fields that hadn't actually changed. Two earlier manual
+// tests happened to receive fuller payloads, which is what led to that (wrong) assumption in
+// the first place. So this only uses the payload to find out *which page changed* (id, parent
+// database) — the actual field values always come from a fresh notionFetch, the same
+// guaranteed-complete read every other part of this app uses.
 export async function handleNotionWebhook(req, res) {
   const secret = req.get('X-Webhook-Secret')
   if (!verifyWebhookSecret(secret)) {
     return res.status(401).json({ status: 'error', message: 'Invalid webhook secret', data: null })
   }
 
-  // Ack immediately — the automation doesn't need to wait on our cache write, which can involve
-  // several Redis round-trips (see writeCompaniesToRedis's chunked rewrite in companiesStore.js).
-  // Continues via runInBackground (waitUntil on Vercel) so it isn't cut off the moment this
-  // response is sent — same pattern the chat job uses.
+  // Ack immediately — the automation doesn't need to wait on our cache write. Continues via
+  // runInBackground (waitUntil on Vercel) so it isn't cut off the moment this response is sent —
+  // same pattern the chat job uses.
   res.status(200).json({ status: 'success', message: 'OK', data: null })
 
-  const page = req.body?.data
-  if (!page || page.object !== 'page') return
-
-  // Diagnostic logging — a company's Name/Domain has been observed going empty in the cache
-  // after a webhook-triggered write, even with concurrent-write races ruled out (the write lock
-  // serializes every cache mutation). That points at some webhook payloads not actually
-  // containing Name/Domain, contradicting what "Select all existing properties" produced in
-  // earlier manual tests. Logging every delivery's automation_id and whether Name/Domain are
-  // present gives direct evidence on the next occurrence instead of another guess.
-  const nameProp = page.properties?.['Name']
-  const domainProp = page.properties?.['Domain']
-  console.log('=== Notion webhook: page event ===', JSON.stringify({
-    automation_id: req.body?.source?.automation_id,
-    event_id: req.body?.source?.event_id,
-    page_id: page.id,
-    property_count: page.properties ? Object.keys(page.properties).length : 0,
-    has_name_property: 'Name' in (page.properties || {}),
-    name_title_text: nameProp?.title?.[0]?.plain_text ?? null,
-    has_domain_property: 'Domain' in (page.properties || {}),
-    domain_url: domainProp?.url ?? null,
-  }))
+  const pageId = req.body?.data?.id
+  if (!pageId) return
 
   runInBackground((async () => {
+    const page = await notionFetch(`/pages/${pageId}`)
     const databaseId = page.parent?.database_id
     if (databaseId === NOTION_COMPANIES_DB_ID) {
       await upsertCachedCompany(mapCompany(page))
