@@ -53,14 +53,40 @@ export function toQueueItem(c) {
   }
 }
 
+// Splits on commas, the word "and", or whitespace — so a single search box can look up several
+// companies at once ("Anori, NYXIUM" or "Anori and NYXIUM") instead of only ever matching the
+// input as one literal phrase, which no company's name/description would ever contain whole.
+function searchTerms(search) {
+  return String(search)
+    .toLowerCase()
+    .split(/,|\band\b|\s+/)
+    .map(t => t.trim())
+    .filter(Boolean)
+}
+
+function matchesAnyTerm(fields, terms) {
+  return terms.some(term => fields.some(field => field.includes(term)))
+}
+
 export function applySearch(items, search) {
   if (!search) return items
-  const q = String(search).toLowerCase()
-  return items.filter(i =>
-    i.name.toLowerCase().includes(q) ||
-    i.description.toLowerCase().includes(q) ||
-    i.external_id.toLowerCase().includes(q)
-  )
+  const terms = searchTerms(search)
+  if (terms.length === 0) return items
+  return items.filter(i => matchesAnyTerm(
+    [i.name.toLowerCase(), i.description.toLowerCase(), i.external_id.toLowerCase()], terms
+  ))
+}
+
+// A comparator ranking name matches ahead of description/external_id-only matches, for use as
+// the *primary* sort key when a search is active — the caller's selected sort (score, recency,
+// etc.) still applies as the tiebreaker within each relevance group. Returns null when there's
+// no active search, so callers can no-op cleanly rather than branching themselves.
+export function searchRelevanceCompare(search) {
+  if (!search) return null
+  const terms = searchTerms(search)
+  if (terms.length === 0) return null
+  const nameMatches = item => terms.some(term => item.name.toLowerCase().includes(term))
+  return (a, b) => Number(nameMatches(b)) - Number(nameMatches(a))
 }
 
 export function parseFilters(raw) {

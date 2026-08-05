@@ -3,7 +3,7 @@ import { sendData, sendError } from '../lib/response.js'
 import {
   mapCompany, getFreshCompanies, getCachedCompany, upsertCachedCompany, replaceCachedCompany, removeCachedCompany,
 } from '../services/companiesStore.js'
-import { toListItem, toQueueItem, applySearch, parseFilters, paginate } from '../services/listShaping.js'
+import { toListItem, toQueueItem, applySearch, searchRelevanceCompare, parseFilters, paginate } from '../services/listShaping.js'
 
 export async function getAllCompanies(req, res) {
   try {
@@ -35,12 +35,17 @@ export async function listCompanies(req, res) {
     }
 
     const sort = req.query.sort ?? 'updated_desc'
-    if (sort === 'name_asc') items.sort((a, b) => a.name.localeCompare(b.name))
-    else if (sort === 'name_desc') items.sort((a, b) => b.name.localeCompare(a.name))
-    else if (sort === 'confidence_asc') items.sort((a, b) => (a.min_confidence ?? 1) - (b.min_confidence ?? 1))
-    else if (sort === 'tags_desc') items.sort((a, b) => b.tag_count - a.tag_count)
-    else if (sort === 'tags_asc') items.sort((a, b) => a.tag_count - b.tag_count)
-    else items.sort((a, b) => b.updated_at.localeCompare(a.updated_at))
+    const sortCompare =
+      sort === 'name_asc' ? (a, b) => a.name.localeCompare(b.name)
+      : sort === 'name_desc' ? (a, b) => b.name.localeCompare(a.name)
+      : sort === 'confidence_asc' ? (a, b) => (a.min_confidence ?? 1) - (b.min_confidence ?? 1)
+      : sort === 'tags_desc' ? (a, b) => b.tag_count - a.tag_count
+      : sort === 'tags_asc' ? (a, b) => a.tag_count - b.tag_count
+      : (a, b) => b.updated_at.localeCompare(a.updated_at)
+    // When a search is active, name matches rank ahead of description/external_id-only matches
+    // — the selected sort still decides ordering within each relevance group.
+    const relevanceCompare = searchRelevanceCompare(req.query.search)
+    items.sort(relevanceCompare ? (a, b) => relevanceCompare(a, b) || sortCompare(a, b) : sortCompare)
 
     sendData(res, { total: items.length, items: paginate(items, req.query.page, req.query.pageSize), cached_at })
   } catch (err) {
@@ -69,11 +74,14 @@ export async function queueCompanies(req, res) {
     }
 
     const sort = req.query.sort ?? 'score_asc'
-    if (sort === 'name_asc') items.sort((a, b) => a.name.localeCompare(b.name))
-    else if (sort === 'name_desc') items.sort((a, b) => b.name.localeCompare(a.name))
-    else if (sort === 'score_asc') items.sort((a, b) => a.score - b.score)
-    else if (sort === 'score_desc') items.sort((a, b) => b.score - a.score)
-    else items.sort((a, b) => b.updated_at.localeCompare(a.updated_at))
+    const sortCompare =
+      sort === 'name_asc' ? (a, b) => a.name.localeCompare(b.name)
+      : sort === 'name_desc' ? (a, b) => b.name.localeCompare(a.name)
+      : sort === 'score_asc' ? (a, b) => a.score - b.score
+      : sort === 'score_desc' ? (a, b) => b.score - a.score
+      : (a, b) => b.updated_at.localeCompare(a.updated_at)
+    const relevanceCompare = searchRelevanceCompare(req.query.search)
+    items.sort(relevanceCompare ? (a, b) => relevanceCompare(a, b) || sortCompare(a, b) : sortCompare)
 
     sendData(res, { total: items.length, items: paginate(items, req.query.page, req.query.pageSize), cached_at })
   } catch (err) {
