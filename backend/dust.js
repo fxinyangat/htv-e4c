@@ -8,11 +8,17 @@ dotenv.config({ path: path.join(__dirname, '../.env.local') })
 const DUST_API_KEY = process.env.DUST_API_KEY
 const DUST_WORKSPACE_ID = process.env.DUST_WORKSPACE_ID
 const DUST_AGENT_ID = process.env.DUST_AGENT_ID
+// Separate from DUST_AGENT_ID (the chat widget's conversational agent) — tagging is normally
+// only triggered by a Notion-side automation when a company is first created, with its own
+// agent that has write access back to the tagging properties. This lets Re-tag invoke that
+// same agent directly for an existing company, instead of only ever chatting with the other one.
+const DUST_TAGGING_AGENT_ID = process.env.DUST_TAGGING_AGENT_ID
 const DUST_BASE_URL = `https://dust.tt/api/v1/w/${DUST_WORKSPACE_ID}`
 
 if (!DUST_API_KEY) console.warn('WARNING: DUST_API_KEY is not set')
 if (!DUST_WORKSPACE_ID) console.warn('WARNING: DUST_WORKSPACE_ID is not set')
 if (!DUST_AGENT_ID) console.warn('WARNING: DUST_AGENT_ID is not set')
+if (!DUST_TAGGING_AGENT_ID) console.warn('WARNING: DUST_TAGGING_AGENT_ID is not set')
 
 async function dustFetch(pathSuffix, options = {}) {
   const res = await fetch(`${DUST_BASE_URL}${pathSuffix}`, {
@@ -33,10 +39,10 @@ async function dustFetch(pathSuffix, options = {}) {
   return data
 }
 
-function messagePayload(content) {
+function messagePayload(content, agentId = DUST_AGENT_ID) {
   return {
     content,
-    mentions: [{ configurationId: DUST_AGENT_ID }],
+    mentions: [{ configurationId: agentId }],
     context: {
       timezone: 'America/Phoenix',
       username: 'htv-app',
@@ -138,4 +144,21 @@ export async function askAgent(content, conversationId, onStatus) {
 
   const response = await pollForAgentReply(conversationSId, agentMessageSId, onStatus)
   return { response, conversationId: conversationSId }
+}
+
+// Fires a one-off instruction at the tagging agent (not the chat agent) asking it to re-analyze
+// an existing company and overwrite its tags — the same write-to-Notion behavior it already
+// performs on creation, just re-invoked manually instead of via the Notion automation trigger.
+// Callers don't need the reply text: the agent's real output is its own Notion write, which the
+// existing webhook/polling flow already picks up. This still polls to completion (rather than
+// firing and forgetting) purely so a failure shows up in logs instead of vanishing silently.
+export async function retagCompany(pageId) {
+  const content = `Re-tag the company at Notion page ID ${pageId}. Re-analyze its current details and overwrite its existing tags with your latest classification, the same way you do when a new company is added.`
+  const data = await dustFetch('/assistant/conversations', {
+    method: 'POST',
+    body: JSON.stringify({ title: null, visibility: 'unlisted', message: messagePayload(content, DUST_TAGGING_AGENT_ID) }),
+  })
+  const conversationSId = data.conversation.sId
+  const agentMsg = data.conversation.content.flat().find(m => m.type === 'agent_message')
+  await pollForAgentReply(conversationSId, agentMsg.sId)
 }

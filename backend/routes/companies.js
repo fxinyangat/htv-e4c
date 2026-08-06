@@ -1,7 +1,7 @@
 import { Router } from 'express'
 import {
   getAllCompanies, listCompanies, queueCompanies, createCompany,
-  getCompanyById, updateCompany, deleteCompany,
+  getCompanyById, updateCompany, deleteCompany, retagCompanyTags, getRetagStatus,
 } from '../controllers/companiesController.js'
 
 const router = Router()
@@ -12,8 +12,10 @@ router.get('/', getAllCompanies)
 router.get('/list', listCompanies)
 router.get('/queue', queueCompanies)
 router.post('/', createCompany)
+router.get('/retag/:jobId/status', getRetagStatus)
 router.get('/:id', getCompanyById)
 router.patch('/:id', updateCompany)
 router.delete('/:id', deleteCompany)
+router.post('/:id/retag', retagCompanyTags)
 
 export default router

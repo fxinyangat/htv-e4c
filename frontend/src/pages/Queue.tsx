@@ -4,7 +4,7 @@ import {
   Search, X, PartyPopper, Loader2, ChevronDown, CheckCircle2, AlertTriangle, XCircle, Bot, UserRound, HelpCircle, RefreshCw,
 } from 'lucide-react'
 import {
-  fetchQueue, fetchCompany, updateCompany, approveCompanyTags, refreshCompanies, REFRESH_COOLDOWN_S, getCompaniesCachedAt, formatRelativeTime, isRealCompanyId, QueueListItem, Company, ScoreBand, AXIS_LABELS,
+  fetchQueue, fetchCompany, updateCompany, approveCompanyTags, retagCompany, refreshCompanies, REFRESH_COOLDOWN_S, getCompaniesCachedAt, formatRelativeTime, isRealCompanyId, QueueListItem, Company, ScoreBand, AXIS_LABELS,
 } from '../api'
 import FilterSidebar from '../components/FilterSidebar'
 import { useToast } from '../context/ToastContext'
@@ -217,6 +217,7 @@ function QueueRow({
   const [state, setState] = useState<AxisState | null>(null)
   const [loading, setLoading] = useState(false)
   const [saving, setSaving] = useState(false)
+  const [retagging, setRetagging] = useState(false)
 
   useEffect(() => {
     if (!expanded || company) return
@@ -273,6 +274,25 @@ function QueueRow({
     onApproved()
   }
 
+  // Re-tag only makes sense for real Notion companies — the tagging agent looks the page up in
+  // Notion itself, so there's nothing to invoke for a mock/demo record. retagCompany() polls the
+  // backend job to completion, so this waits for the actual outcome (including surfacing a real
+  // failure like a Dust rate/credit limit) instead of just firing and hoping.
+  async function handleRetag() {
+    if (!company || !isRealCompanyId(company.id)) return
+    setRetagging(true)
+    try {
+      await retagCompany(company.id)
+      showToast('success', 'Re-tagging complete', 'The tagging agent has finished — tags will refresh automatically.')
+    } catch (err) {
+      console.error('Failed to re-tag company:', err)
+      const message = err instanceof Error ? err.message : 'Could not re-tag this company.'
+      showToast('error', 'Re-tag failed', message)
+    } finally {
+      setRetagging(false)
+    }
+  }
+
   return (
     <div className={`bg-white rounded-2xl border shadow-sm transition-all overflow-hidden ${expanded ? 'border-l-4 border-l-ht-orange border-ht-blue/10' : 'border-ht-blue/10 hover:border-ht-blue/20 hover:shadow-md'}`}>
       <div onClick={onToggle} className="p-6 flex items-center justify-between gap-6 cursor-pointer">
@@ -325,7 +345,16 @@ function QueueRow({
                 />
               ))}
 
-              <div className="flex justify-end pt-4">
+              <div className="flex justify-end gap-2.5 pt-4">
+                {company && isRealCompanyId(company.id) && (
+                  <button
+                    onClick={handleRetag}
+                    disabled={retagging || saving}
+                    className="flex items-center gap-2 px-5 py-2.5 bg-white text-ht-blue text-sm font-semibold rounded-xl border border-ht-blue/10 hover:bg-ht-blue/5 hover:border-ht-blue/20 transition-all disabled:opacity-50"
+                  >
+                    <RefreshCw className={`w-4 h-4 ${retagging ? 'animate-spin' : ''}`} /> {retagging ? 'Re-tagging…' : 'Re-tag'}
+                  </button>
+                )}
                 <button
                   onClick={handleApprove}
                   disabled={saving}

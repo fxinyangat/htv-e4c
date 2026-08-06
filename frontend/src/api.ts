@@ -615,6 +615,34 @@ export async function deleteRealCompany(id: string): Promise<void> {
   }
 }
 
+// Re-tag: manually re-invokes the tagging agent for a company that's already in Notion. Same
+// job-based pattern as sendChatMessage below — POST starts the job and returns a jobId
+// immediately, then this polls a status endpoint so failures (e.g. Dust rate/credit limits)
+// surface to the caller instead of only ending up in a background server log.
+interface RetagJobEnvelope {
+  status: 'progress' | 'success' | 'error'
+  message: string
+  data: null
+}
+
+const RETAG_POLL_INTERVAL_MS = 2000
+
+export async function retagCompany(id: string): Promise<void> {
+  const startRes = await fetch(`/api/companies/${id}/retag`, { method: 'POST' })
+  const startBody = await startRes.json().catch(() => ({}))
+  if (!startRes.ok) throw new Error(startBody.message || 'Failed to start re-tagging')
+  const jobId: string = startBody.data.jobId
+
+  while (true) {
+    await sleep(RETAG_POLL_INTERVAL_MS)
+    const statusRes = await fetch(`/api/companies/retag/${jobId}/status`)
+    const job: RetagJobEnvelope = await statusRes.json().catch(() => ({}) as RetagJobEnvelope)
+    if (!statusRes.ok) throw new Error(job.message || 'Failed to check re-tagging status')
+    if (job.status === 'success') return
+    if (job.status === 'error') throw new Error(job.message)
+  }
+}
+
 // "5 mins ago" style relative time, for showing when the company list was last pulled from Notion.
 export function formatRelativeTime(timestamp: number): string {
   const diffMs = Date.now() - timestamp

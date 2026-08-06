@@ -1,5 +1,9 @@
+import { randomUUID } from 'crypto'
 import { notionFetch, NOTION_COMPANIES_DB_ID, toMultiSelect, toSelect, toTitle, toRichText, toUrl } from '../notion.js'
 import { sendData, sendError } from '../lib/response.js'
+import { runInBackground } from '../lib/background.js'
+import { redis } from '../lib/redis.js'
+import { retagCompany } from '../dust.js'
 import {
   mapCompany, getFreshCompanies, getCachedCompany, upsertCachedCompany, replaceCachedCompany, removeCachedCompany,
 } from '../services/companiesStore.js'
@@ -173,6 +177,55 @@ export async function updateCompany(req, res) {
     const mapped = mapCompany(updatedPage)
     await replaceCachedCompany(mapped)
     sendData(res, mapped, 'Company updated')
+  } catch (err) {
+    sendError(res, err)
+  }
+}
+
+// Re-tag: manually re-invokes the tagging agent (separate from the chat agent) for a company
+// that's already in Notion — the agent normally only runs once, via a Notion automation that
+// fires on company creation, so this is the only way to make it re-run later.
+//
+// Job state lives in Redis rather than a held-open response, same reasoning as /api/chat: the
+// agent can take a while, and a dropped connection shouldn't lose a result the server is still
+// producing. Unlike the webhook flow, callers here need to *see* a failure (e.g. Dust rate/credit
+// limits) rather than have it silently swallowed in a background log — POST starts the job and
+// returns a jobId immediately; the frontend polls the status endpoint for the outcome.
+const retagJobKey = jobId => `retag:job:${jobId}`
+const RETAG_JOB_TTL_S = 60 * 60 // 1 hour — finished/abandoned jobs shouldn't linger in Redis forever
+
+async function writeRetagJob(jobId, job) {
+  await redis.set(retagJobKey(jobId), job, { ex: RETAG_JOB_TTL_S })
+}
+
+export async function retagCompanyTags(req, res) {
+  const jobId = randomUUID()
+  try {
+    await writeRetagJob(jobId, { status: 'progress', message: 'Re-tagging in progress…', data: null })
+  } catch (err) {
+    return sendError(res, err, 'Failed to start re-tagging')
+  }
+
+  runInBackground((async () => {
+    try {
+      await retagCompany(req.params.id)
+      await writeRetagJob(jobId, { status: 'success', message: 'Re-tagging complete', data: null })
+    } catch (err) {
+      console.error('Re-tag request to Dust failed:', err)
+      await writeRetagJob(jobId, { status: 'error', message: err.message, data: null })
+    }
+  })())
+
+  sendData(res, { jobId }, 'Re-tagging started', 202)
+}
+
+export async function getRetagStatus(req, res) {
+  try {
+    const job = await redis.get(retagJobKey(req.params.jobId))
+    if (!job) {
+      return res.status(404).json({ status: 'error', message: 'Re-tag job not found or expired', data: null })
+    }
+    res.status(200).json(job)
   } catch (err) {
     sendError(res, err)
   }
