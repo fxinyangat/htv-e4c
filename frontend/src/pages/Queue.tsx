@@ -1,4 +1,4 @@
-import { useEffect, useState } from 'react'
+import { useEffect, useRef, useState } from 'react'
 import { Link, useSearchParams } from 'react-router-dom'
 import {
   Search, X, PartyPopper, Loader2, ChevronDown, CheckCircle2, AlertTriangle, XCircle, Bot, UserRound, HelpCircle, RefreshCw,
@@ -362,6 +362,7 @@ export default function Queue() {
   )
 
   const filterKey = JSON.stringify(filters)
+  const loadRequestId = useRef(0) // guards against an older, slower load() response overwriting a newer one
 
   // Deep-link from CompanyDetailPanel's "Manage Tags" (and anywhere else linking to
   // /queue?id=<uuid>) — the target company might be Human-reviewed (excluded from the default
@@ -381,8 +382,13 @@ export default function Queue() {
   }, [])
 
   async function load(p = page) {
+    const requestId = ++loadRequestId.current
     setLoading(true)
     const data = await fetchQueue({ page: p, pageSize: 20, search, sort, filters })
+    // A newer load() call has since started (e.g. the deep-link effect clearing filters/setting
+    // search right after the initial default-filtered load kicked off) — this response is stale,
+    // discard it rather than let it overwrite a more recent, more correct one.
+    if (requestId !== loadRequestId.current) return
     setItems(data.items)
     setTotal(data.total)
     setLoading(false)
