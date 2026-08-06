@@ -100,6 +100,9 @@ function newSessionId(): string {
 // question" (timeout) call for different reactions than a generic fallback would suggest.
 function describeError(error: unknown): string {
   const message = error instanceof Error ? error.message : '';
+  if (/out of programmatic usage credits|purchase more credits/i.test(message)) {
+    return "The AI assistant is unavailable — the Dust workspace has run out of usage credits. Ask a workspace admin to purchase more.";
+  }
   if (/rate limit/i.test(message)) {
     return "The AI assistant is temporarily rate-limited — please wait a moment and try again.";
   }
