@@ -7,6 +7,7 @@ import {
   fetchQueue, fetchCompany, updateCompany, approveCompanyTags, retagCompany, refreshCompanies, REFRESH_COOLDOWN_S, getCompaniesCachedAt, formatRelativeTime, isRealCompanyId, QueueListItem, Company, ScoreBand, AXIS_LABELS,
 } from '../api'
 import FilterSidebar from '../components/FilterSidebar'
+import ConfirmModal from '../components/ConfirmModal'
 import { useToast } from '../context/ToastContext'
 import { useTaxonomy } from '../context/TaxonomyContext'
 
@@ -218,6 +219,7 @@ function QueueRow({
   const [loading, setLoading] = useState(false)
   const [saving, setSaving] = useState(false)
   const [retagging, setRetagging] = useState(false)
+  const [confirmingRetag, setConfirmingRetag] = useState(false)
 
   useEffect(() => {
     if (!expanded || company) return
@@ -280,6 +282,7 @@ function QueueRow({
   // failure like a Dust rate/credit limit) instead of just firing and hoping.
   async function handleRetag() {
     if (!company || !isRealCompanyId(company.id)) return
+    setConfirmingRetag(false)
     setRetagging(true)
     try {
       await retagCompany(company.id)
@@ -348,7 +351,7 @@ function QueueRow({
               <div className="flex justify-end gap-2.5 pt-4">
                 {company && isRealCompanyId(company.id) && (
                   <button
-                    onClick={handleRetag}
+                    onClick={() => setConfirmingRetag(true)}
                     disabled={retagging || saving}
                     className="flex items-center gap-2 px-5 py-2.5 bg-white text-ht-blue text-sm font-semibold rounded-xl border border-ht-blue/10 hover:bg-ht-blue/5 hover:border-ht-blue/20 transition-all disabled:opacity-50"
                   >
@@ -366,6 +369,18 @@ function QueueRow({
             </>
           )}
         </div>
+      )}
+
+      {confirmingRetag && (
+        <ConfirmModal
+          title="Re-tag this company?"
+          message="This action will overwrite the existing tags. This can't be undone."
+          confirmLabel="Yes, re-tag"
+          confirmingLabel="Re-tagging…"
+          onCancel={() => setConfirmingRetag(false)}
+          onConfirm={handleRetag}
+          loading={retagging}
+        />
       )}
     </div>
   )
