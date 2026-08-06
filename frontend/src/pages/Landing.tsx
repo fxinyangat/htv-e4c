@@ -72,7 +72,7 @@ export default function Landing() {
             }}
             className="px-4 py-2 bg-ht-orange text-white text-sm font-semibold rounded-xl shadow-lg shadow-ht-orange/20 hover:shadow-ht-orange/40 transition-all flex items-center gap-1.5"
           >
-            <Sparkles className="w-3.5 h-3.5" /> Ask Gordon
+            <Sparkles className="w-3.5 h-3.5" /> Ask Hometeam-AI
           </button>
 
           {!authLoading && (

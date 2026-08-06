@@ -140,7 +140,7 @@ export default function Companies() {
   // poll noticing tags arrived) where swapping data in place beats flashing the whole list.
   async function load(p = page, silent = false) {
     if (!silent) setLoading(true)
-    const data = await fetchCompanies({ page: p, pageSize: 20, search, sort, filters })
+    const data = await fetchCompanies({ page: p, pageSize: 10, search, sort, filters })
     setItems(data.items)
     setTotal(data.total)
     if (!silent) setLoading(false)

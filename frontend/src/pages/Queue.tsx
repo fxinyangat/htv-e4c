@@ -384,7 +384,7 @@ export default function Queue() {
   async function load(p = page) {
     const requestId = ++loadRequestId.current
     setLoading(true)
-    const data = await fetchQueue({ page: p, pageSize: 20, search, sort, filters })
+    const data = await fetchQueue({ page: p, pageSize: 10, search, sort, filters })
     // A newer load() call has since started (e.g. the deep-link effect clearing filters/setting
     // search right after the initial default-filtered load kicked off) — this response is stale,
     // discard it rather than let it overwrite a more recent, more correct one.
