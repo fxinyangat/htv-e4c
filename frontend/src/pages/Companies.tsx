@@ -133,14 +133,21 @@ export default function Companies() {
     setSearchParams(newParams, { replace: true })
   }
   const loadRef = useRef<(p?: number, silent?: boolean) => Promise<void>>()
+  // Guards against out-of-order responses: the tagging poll's silent refresh, a filter/sort
+  // change, and the page effect can all fire fetchCompanies concurrently, and whichever HTTP
+  // response lands last would otherwise win regardless of which request was actually newest —
+  // silently overwriting fresh (post-tagging) data with a stale snapshot for one render.
+  const loadRequestId = useRef(0)
 
   const filterKey = JSON.stringify(filters)
 
   // `silent` skips the loading spinner — used for background refreshes (e.g. the tagging
   // poll noticing tags arrived) where swapping data in place beats flashing the whole list.
   async function load(p = page, silent = false) {
+    const requestId = ++loadRequestId.current
     if (!silent) setLoading(true)
     const data = await fetchCompanies({ page: p, pageSize: 10, search, sort, filters })
+    if (requestId !== loadRequestId.current) return
     setItems(data.items)
     setTotal(data.total)
     if (!silent) setLoading(false)
