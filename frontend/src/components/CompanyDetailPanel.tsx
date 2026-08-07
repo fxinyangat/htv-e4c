@@ -316,7 +316,7 @@ export default function CompanyDetailPanel({ company, onClose, onDeleted, onUpda
                     <span className="text-[11px] text-ht-blue/40">{score}/100</span>
                   </div>
                 </InfoRow>
-                <InfoRow label="Date Added">{formatDate(company.updated_at)}</InfoRow>
+                <InfoRow label="Date Added">{formatDate(company.created_at)}</InfoRow>
               </div>
             </section>
           </div>

@@ -17,8 +17,15 @@ export async function inboundStats(req, res) {
     }
 
     const { companies, cached_at } = await getFreshCompanies(req.query.refresh === '1')
+    // r.from/r.to are bare "YYYY-MM-DD" quarter boundaries; created_at is now a full ISO
+    // timestamp, so this compares actual instants rather than lexicographically comparing
+    // strings of different lengths (which broke the moment created_at stopped being date-only).
+    const inRange = (createdAt, r) => {
+      const t = new Date(createdAt).getTime()
+      return t >= new Date(`${r.from}T00:00:00.000Z`).getTime() && t <= new Date(`${r.to}T23:59:59.999Z`).getTime()
+    }
     const scoped = ranges.length
-      ? companies.filter(c => c.created_at && ranges.some(r => c.created_at >= r.from && c.created_at <= r.to))
+      ? companies.filter(c => c.created_at && ranges.some(r => inRange(c.created_at, r)))
       : companies
 
     const axisValues = (c, axis) => c.tags.filter(t => t.axis === axis).map(t => t.value)

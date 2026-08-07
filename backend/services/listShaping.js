@@ -18,7 +18,7 @@ export function toListItem(c) {
   }
   return {
     id: c.id, external_id: c.external_id, name: c.name, description: c.description,
-    priority: c.priority, updated_at: c.updated_at,
+    priority: c.priority, updated_at: c.updated_at, created_at: c.created_at,
     min_confidence: aiTags.length ? Math.min(...aiTags.map(t => t.confidence)) : null,
     has_pending: pending.length > 0,
     tag_count: c.tags.length,

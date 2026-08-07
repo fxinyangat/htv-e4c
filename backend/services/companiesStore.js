@@ -70,8 +70,13 @@ export function mapCompany(page) {
     name: readTitle(p['Name']),
     description: readText(p['Description']),
     priority: 'review',
-    updated_at: (page.last_edited_time || '').slice(0, 10),
-    created_at: (page.created_time || '').slice(0, 10),
+    // Full ISO timestamps, not sliced to a bare date — Notion always returns these in UTC, and
+    // slicing to just the UTC calendar date (the old behavior) could show the wrong day for
+    // anyone outside UTC (e.g. an edit at 7pm Phoenix time on Aug 5 is already Aug 6 in UTC).
+    // Keeping the full timestamp lets the frontend's `new Date(iso).toLocaleDateString()` do the
+    // UTC-to-local conversion correctly instead of the date having already been decided server-side.
+    updated_at: page.last_edited_time || '',
+    created_at: page.created_time || '',
     domain: stripDomain(readUrl(p['Domain'])),
     location: readText(p['Location']),
     region,

@@ -67,6 +67,7 @@ export interface CompanyListItem {
   description: string
   priority: Priority
   updated_at: string
+  created_at: string
   min_confidence: number | null
   has_pending: boolean | null
   tag_count: number

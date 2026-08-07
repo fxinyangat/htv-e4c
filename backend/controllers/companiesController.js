@@ -45,6 +45,7 @@ export async function listCompanies(req, res) {
       : sort === 'confidence_asc' ? (a, b) => (a.min_confidence ?? 1) - (b.min_confidence ?? 1)
       : sort === 'tags_desc' ? (a, b) => b.tag_count - a.tag_count
       : sort === 'tags_asc' ? (a, b) => a.tag_count - b.tag_count
+      : sort === 'created_desc' ? (a, b) => b.created_at.localeCompare(a.created_at)
       : (a, b) => b.updated_at.localeCompare(a.updated_at)
     // When a search is active, name matches rank ahead of description/external_id-only matches
     // — the selected sort still decides ordering within each relevance group.
